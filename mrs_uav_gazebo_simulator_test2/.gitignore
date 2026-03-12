@@ -1,0 +1,36 @@
+# ROS 2 build directories
+# ========================
+build/
+install/
+log/
+
+
+# Python & Packaging
+# ========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+sdist/
+venv/
+env/
+*/venv/
+*/env/
+
+
+# IDE Configuration
+# ========================
+# VSCode
+.vscode/
+
+# Vim
+*.swp
+*.swo
+
+
+# OS-generated files
+# ========================
+.DS_Store
+Thumbs.db
