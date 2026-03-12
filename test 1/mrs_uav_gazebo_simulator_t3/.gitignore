@@ -1,0 +1,70 @@
+# ============================================================
+# PYTHON + ROS 2 .gitignore
+# ============================================================
+
+# ROS 2 build system
+build/
+install/
+log/
+.colcon/
+.colcon_install_layout
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python packaging
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter notebooks
+.ipynb_checkpoints
+
+# Configuration / secrets
+.env
+.env.*
+*.env
+*.yaml
+*.yml
+*.json
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# CMake / Colcon artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Temporary / backup files
+*~
+*.tmp
+*.old
+*.orig
+
+# ============================================================
+# END
+# ============================================================

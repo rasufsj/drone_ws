@@ -1,0 +1,36 @@
+mrs_uav_managers:
+
+  world_origin:
+
+    units: "UTM" # Para simulação local sem GPS
+
+    origin_x: 0.0
+    origin_y: 0.0
+
+  safety_area_manager:
+
+    safety_area:
+
+      enabled: false  # Desabilite para desbloquear; reative com frame local depois
+
+      horizontal:
+
+        frame_name: "local_origin"  # Frame local em metros
+
+        points: [
+          -50, -50,
+          50,  -50,
+          50,  50,
+          -50, 50,
+        ]
+
+      vertical:
+
+        frame_name: "local_origin"
+
+        max_z: 15.0
+        min_z: 0.5
+
+      obstacles:
+
+        present: false
