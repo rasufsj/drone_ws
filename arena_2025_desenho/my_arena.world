@@ -45,8 +45,8 @@
     <!--}-->
 
     <include>
-      <uri>file:///home/lmnr31/ros2_ws/src/arena_2025/model.sdf</uri>
-      <name>arena_2025</name>
+      <uri>file:///home/cyrosrobot4/drone_ws/src/arena_2025_desenho/model.sdf</uri>
+      <name>arena_2025_desenho</name>
       <pose>0 0 0 0 0 0</pose>
     </include>
     <!--}-->
@@ -55,13 +55,6 @@
       <max_step_size>0.005</max_step_size>
       <real_time_update_rate>200</real_time_update_rate>
     </physics>
-
-    <model name="uav1">
-      <pose>-1.85 0.05 2.0 0 0 0</pose>
-      <include>
-        <uri>model://f450</uri>
-      </include>
-    </model>
 
   </world>
 </sdf>

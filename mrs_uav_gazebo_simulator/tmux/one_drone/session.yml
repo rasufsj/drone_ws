@@ -12,8 +12,8 @@ pre_window:
   - export PLATFORM_CONFIG=`ros2 pkg prefix mrs_uav_gazebo_simulator`/share/mrs_uav_gazebo_simulator/config/mrs_uav_system/$UAV_TYPE.yaml
   - export RMW_IMPLEMENTATION=rmw_zenoh_cpp
   - export USE_SIM_TIME="true"
-  - export GZ_SIM_MODEL_PATH=$GAZEBO_MODEL_PATH:/home/cyrosrobot4/drone_ws/src/arena_2025
-  - export GZ_SIM_RESOURCE_PATH=$GAZEBO_RESOURCE_PATH:/home/cyrosrobot4/drone_ws/src/arena_2025
+  - export GZ_SIM_MODEL_PATH=$GAZEBO_MODEL_PATH:/home/cyrosrobot4/drone_ws/src/arena_2025_desenho_desenho
+  - export GZ_SIM_RESOURCE_PATH=$GAZEBO_RESOURCE_PATH:/home/cyrosrobot4/drone_ws/src/arena_2025_desenho_desenho
 startup_window: status
 windows:
   - zenoh_router:
