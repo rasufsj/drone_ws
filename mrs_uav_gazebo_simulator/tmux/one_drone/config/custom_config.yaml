@@ -19,34 +19,34 @@ mrs_uav_managers:
       utm_based: false
       republish_in_frames: ["local_origin", "stable_origin", "fcu_untilted"]
 
-  uav_manager:
+#   uav_manager:
 
-    takeoff:
+#     takeoff:
 
-      during_takeoff:
-        controller: "MpcController"
-        tracker: "LandoffTracker"
+#       during_takeoff:
+#         controller: "MpcController"
+#         tracker: "LandoffTracker"
 
-      after_takeoff:
-        controller: "Se3Controller"
-        tracker: "MpcTracker"
-  
- # Adicione sua seção control_manager se precisar (opcional, para MPC detalhado) 
-  
-  control_manager:
-    mpc_controller:
-      detailed_model:
-        model_params:
-          enabled: true
-          propulsion:
-            force_constant: 0.00000012216
-            torque_constant: 0.07
-            prop_radius: 0.11
-            allocation_matrix:
-              - -0.159, 0.159, 0.159, -0.159  # Ajustado para f450 (roll/pitch * arm_length ~0.225m)
-              - -0.159, 0.159, -0.159, 0.159
-              - -1, -1, 1, 1
-              - 1, 1, 1, 1
-          rpm:
-            min: 1360
-            max: 9068
+#       after_takeoff:
+#         controller: "Se3Controller"
+#         tracker: "MpcTracker"
+
+#  # Adicione sua seção control_manager se precisar (opcional, para MPC detalhado)
+
+#   control_manager:
+#     mpc_controller:
+#       detailed_model:
+#         model_params:
+#           enabled: true
+#           propulsion:
+#             force_constant: 0.00000012216
+#             torque_constant: 0.07
+#             prop_radius: 0.11
+#             allocation_matrix:
+#               - -0.159, 0.159, 0.159, -0.159  # Ajustado para f450 (roll/pitch * arm_length ~0.225m)
+#               - -0.159, 0.159, -0.159, 0.159
+#               - -1, -1, 1, 1
+#               - 1, 1, 1, 1
+#           rpm:
+#             min: 1360
+#             max: 9068

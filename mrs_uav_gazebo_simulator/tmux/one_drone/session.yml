@@ -12,8 +12,8 @@ pre_window:
   - export PLATFORM_CONFIG=`ros2 pkg prefix mrs_uav_gazebo_simulator`/share/mrs_uav_gazebo_simulator/config/mrs_uav_system/$UAV_TYPE.yaml
   - export RMW_IMPLEMENTATION=rmw_zenoh_cpp
   - export USE_SIM_TIME="true"
-  - export GZ_SIM_MODEL_PATH=$GAZEBO_MODEL_PATH:/home/lmnr31/ros2_ws/src/arena_2025_desenho
-  - export GZ_SIM_RESOURCE_PATH=$GAZEBO_RESOURCE_PATH:/home/lmnr31/ros2_ws/src/arena_2025_desenho
+  - export GZ_SIM_MODEL_PATH=$GAZEBO_MODEL_PATH:/home/cyrosrobot4/drone_ws/src/arena_2025
+  - export GZ_SIM_RESOURCE_PATH=$GAZEBO_RESOURCE_PATH:/home/cyrosrobot4/drone_ws/src/arena_2025
 startup_window: status
 windows:
   - zenoh_router:
@@ -35,21 +35,21 @@ windows:
       panes:
         - ros2 launch mrs_uav_core core.launch.py
           platform_config:=$PLATFORM_CONFIG
-          world_config:=/home/lmnr31/ros2_ws/src/mrs_uav_gazebo_simulator/tmux/one_drone/config/world_config.yaml
-          custom_config:=/home/lmnr31/ros2_ws/src/mrs_uav_gazebo_simulator/tmux/one_drone/config/custom_config.yaml
+          world_config:=/home/cyrosrobot4/drone_ws/src/mrs_uav_gazebo_simulator/tmux/one_drone/config/world_config.yaml
+          custom_config:=/home/cyrosrobot4/drone_ws/src/mrs_uav_gazebo_simulator/tmux/one_drone/config/custom_config.yaml
           network_config:=./config/network_config.yaml
   - status:
       layout: tiled
       panes:
         - ros2 run mrs_uav_status status.sh
-  - autostart:
-      layout: tiled
-      panes:
-        - ros2 launch mrs_uav_autostart automatic_start.launch.py custom_config:=./config/automatic_start.yaml
-  - takeoff:
-      layout: tiled
-      panes:
-        - waitForCore; sleep 10; ./takeoff.sh
+  # - autostart:
+  #     layout: tiled
+  #     panes:
+  #       - ros2 launch mrs_uav_autostart automatic_start.launch.py custom_config:=./config/automatic_start.yaml
+  # - takeoff:
+  #     layout: tiled
+  #     panes:
+  #       - waitForCore; sleep 10; ./takeoff.sh
   - rviz:
       layout: tiled
       panes:
