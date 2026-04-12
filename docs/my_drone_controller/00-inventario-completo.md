@@ -1,35 +1,50 @@
-# Inventário Completo de Arquivos — `my_drone_controller/src`
+# Inventário Completo de Arquivos — `my_drone_controller`
 
-> **Objetivo deste documento:** listar e descrever **todos** os arquivos presentes em
-> `my_drone_controller/src`, indicando para cada um o papel/responsabilidade, as
-> principais funções/classes que contém, a relação com a FSM e/ou com o nó
-> `DroneControllerCompleto`, e **o que cada bloco de código faz**.
+> **Objetivo deste documento:** listar e descrever **todos** os arquivos do pacote
+> `my_drone_controller` — diretórios `src/`, `include/` e `config/` —
+> indicando para cada um o papel/responsabilidade, as principais funções/classes
+> que contém, a relação com a FSM e/ou com o nó `DroneControllerCompleto`, e
+> **o que cada bloco de código faz**.
 >
 > Linguagem: **português** | Estilo: guia acadêmico de implementação.
-> Última sincronização com o diretório: 2026-04-11.
+> Última sincronização com o diretório: 2026-04-12.
 
 ---
 
 ## Índice rápido
 
-| # | Arquivo | Categoria | Doc detalhada |
-|---|---------|-----------|---------------|
-| 1 | [`main.cpp`](#1-maincpp) | Ponto de entrada | [12-main-e-estado0.md](12-main-e-estado0.md) |
-| 2 | [`drone_controller_completo.cpp`](#2-drone_controller_completocpp) | Nó ROS 2 principal | [03](03-drone_controller_completo-parte1-setup.md) · [04](04-drone_controller_completo-parte2-loop-e-setpoints.md) · [11](11-subscribers-e-callbacks.md) |
-| 3 | [`fsm_state0_wait.cpp`](#3-fsm_state0_waitcpp) | FSM — Estado 0 | [12-main-e-estado0.md](12-main-e-estado0.md) |
-| 4 | [`fsm_takeoff.cpp`](#4-fsm_takeoffcpp) | FSM — Estado 1 | [05-fsm_takeoff.md](05-fsm_takeoff.md) |
-| 5 | [`fsm_hover.cpp`](#5-fsm_hovercpp) | FSM — Estado 2 | [06-fsm_hover.md](06-fsm_hover.md) |
-| 6 | [`fsm_trajectory.cpp`](#6-fsm_trajectorycpp) | FSM — Estado 3 | [07-fsm_trajectory.md](07-fsm_trajectory.md) |
-| 7 | [`fsm_landing.cpp`](#7-fsm_landingcpp) | FSM — Estado 4 | [08-fsm_landing.md](08-fsm_landing.md) |
-| 8 | [`command_queue.cpp`](#8-command_queuecpp) | Fila de auditoria | [14-command-queue.md](14-command-queue.md) |
-| 9 | [`waypoint_validation.cpp`](#9-waypoint_validationcpp) | Validação de entrada | [13-waypoint-validation.md](13-waypoint-validation.md) |
-| 10 | [`Drone_codegen.cpp`](#10-drone_codegencpp) | Controlador PID codegen | [15-codegen-planner-e-controlador.md](15-codegen-planner-e-controlador.md) |
-| 11 | [`TrajectoryPlanner_codegen.cpp`](#11-trajectoryplanner_codegencpp) | Planner polinomial codegen | [15-codegen-planner-e-controlador.md](15-codegen-planner-e-controlador.md) |
-| 12 | [`cos.cpp`](#12-coscpp) | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#5-coscpp--stub-vazio-compatibilidade-de-codegen) |
-| 13 | [`minOrMax.cpp`](#13-minormaxcpp) | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#3-minormaxcpp--saturação-de-vetores-e-escalares) |
-| 14 | [`mldivide.cpp`](#14-mldividecpp) | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#4-mldividecpp--solver-de-sistemas-lineares-por-eliminação-gaussiana-com-pivotamento-parcial) |
-| 15 | [`rt_nonfinite.cpp`](#15-rt_nonfinitecpp) | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#2-rt_nonfinitecpp--constantes-globais-nan--inf) |
-| 16 | [`sqrt.cpp`](#16-sqrtcpp) | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#6-sqrtcpp--stub-vazio-compatibilidade-de-codegen) |
+| # | Arquivo | Dir | Categoria | Doc detalhada |
+|---|---------|-----|-----------|---------------|
+| 1 | [`main.cpp`](#1-maincpp) | `src/` | Ponto de entrada | [12-main-e-estado0.md](12-main-e-estado0.md) |
+| 2 | [`drone_controller_completo.cpp`](#2-drone_controller_completocpp) | `src/` | Nó ROS 2 principal | [03](03-drone_controller_completo-parte1-setup.md) · [04](04-drone_controller_completo-parte2-loop-e-setpoints.md) · [11](11-subscribers-e-callbacks.md) |
+| 3 | [`fsm_state0_wait.cpp`](#3-fsm_state0_waitcpp) | `src/` | FSM — Estado 0 | [12-main-e-estado0.md](12-main-e-estado0.md) |
+| 4 | [`fsm_takeoff.cpp`](#4-fsm_takeoffcpp) | `src/` | FSM — Estado 1 | [05-fsm_takeoff.md](05-fsm_takeoff.md) |
+| 5 | [`fsm_hover.cpp`](#5-fsm_hovercpp) | `src/` | FSM — Estado 2 | [06-fsm_hover.md](06-fsm_hover.md) |
+| 6 | [`fsm_trajectory.cpp`](#6-fsm_trajectorycpp) | `src/` | FSM — Estado 3 | [07-fsm_trajectory.md](07-fsm_trajectory.md) |
+| 7 | [`fsm_landing.cpp`](#7-fsm_landingcpp) | `src/` | FSM — Estado 4 | [08-fsm_landing.md](08-fsm_landing.md) |
+| 8 | [`command_queue.cpp`](#8-command_queuecpp) | `src/` | Fila de auditoria | [14-command-queue.md](14-command-queue.md) |
+| 9 | [`waypoint_validation.cpp`](#9-waypoint_validationcpp) | `src/` | Validação de entrada | [13-waypoint-validation.md](13-waypoint-validation.md) |
+| 10 | [`Drone_codegen.cpp`](#10-drone_codegencpp) | `src/` | Controlador PID codegen | [15-codegen-planner-e-controlador.md](15-codegen-planner-e-controlador.md) |
+| 11 | [`TrajectoryPlanner_codegen.cpp`](#11-trajectoryplanner_codegencpp) | `src/` | Planner polinomial codegen | [15-codegen-planner-e-controlador.md](15-codegen-planner-e-controlador.md) |
+| 12 | [`cos.cpp`](#12-coscpp) | `src/` | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#5-coscpp--stub-vazio-compatibilidade-de-codegen) |
+| 13 | [`minOrMax.cpp`](#13-minormaxcpp) | `src/` | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#3-minormaxcpp--saturação-de-vetores-e-escalares) |
+| 14 | [`mldivide.cpp`](#14-mldividecpp) | `src/` | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#4-mldividecpp--solver-de-sistemas-lineares-por-eliminação-gaussiana-com-pivotamento-parcial) |
+| 15 | [`rt_nonfinite.cpp`](#15-rt_nonfinitecpp) | `src/` | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#2-rt_nonfinitecpp--constantes-globais-nan--inf) |
+| 16 | [`sqrt.cpp`](#16-sqrtcpp) | `src/` | Helper matemático codegen | [16-codegen-helpers-matematicos.md](16-codegen-helpers-matematicos.md#6-sqrtcpp--stub-vazio-compatibilidade-de-codegen) |
+| 17 | [`drone_config.yaml`](#17-drone_configyaml) | `config/` | Parâmetros ROS 2 | [17-configuracao-yaml.md](17-configuracao-yaml.md) |
+| 18 | [`drone_controller_completo.hpp`](#18-drone_controller_completohpp) | `include/my_drone_controller/` | API do nó (classe completa) | [18-headers-e-contratos.md](18-headers-e-contratos.md) |
+| 19 | [`command_queue.hpp`](#19-command_queuehpp) | `include/my_drone_controller/` | API da fila de auditoria | [18-headers-e-contratos.md](18-headers-e-contratos.md#2-command_queuehpp--api-da-fila-de-auditoria) |
+| 20 | [`waypoint_validation.hpp`](#20-waypoint_validationhpp) | `include/my_drone_controller/` | API de validação | [18-headers-e-contratos.md](18-headers-e-contratos.md#3-waypoint_validationhpp--api-de-validação-de-waypoints) |
+| 21 | [`drone_config.h`](#21-drone_configh) | `include/` | Struct de configuração | [18-headers-e-contratos.md](18-headers-e-contratos.md#4-drone_configh--struct-de-configuração) |
+| 22 | [`Drone_codegen.h`](#22-drone_codegenh) | `include/` | Header do controlador PID codegen | [18-headers-e-contratos.md](18-headers-e-contratos.md#5-drone_codegenh-e-trajectoryplanner_codegenh) |
+| 23 | [`TrajectoryPlanner_codegen.h`](#23-trajectoryplanner_codegenh) | `include/` | Header do planner codegen | [18-headers-e-contratos.md](18-headers-e-contratos.md#5-drone_codegenh-e-trajectoryplanner_codegenh) |
+| 24 | [`rtwtypes.h`](#24-rtwtypesh) | `include/` | Tipos base MATLAB Coder | [18-headers-e-contratos.md](18-headers-e-contratos.md#6-rtwtypesh--tipos-base-matlab-coder) |
+| 25 | [`rt_nonfinite.h`](#25-rt_nonfiniteh) | `include/` | Declaração NaN/Inf codegen | [18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh) |
+| 26 | [`cos.h`](#26-cosh) | `include/` | Wrapper `coder::b_cos` | [18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh) |
+| 27 | [`sqrt.h`](#27-sqrth) | `include/` | Wrapper `coder::b_sqrt` | [18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh) |
+| 28 | [`minOrMax.h`](#28-minormaxh) | `include/` | Wrapper saturação codegen | [18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh) |
+| 29 | [`mldivide.h`](#29-mldivideh) | `include/` | Wrapper solver LU codegen | [18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh) |
+| 30 | [`coder_array.h`](#30-coder_arrayh) | `include/` | Template de array codegen | [18-headers-e-contratos.md](18-headers-e-contratos.md#8-coder_arrayh--template-de-array-codegen) |
 
 ---
 
@@ -1125,21 +1140,213 @@ compilação não contribui com nenhum símbolo. Mantido para compatibilidade co
 
 ## Tabela-resumo: relação com a FSM
 
-| Arquivo | Estado FSM | Transições que desencadeia |
-|---------|-----------|---------------------------|
-| `main.cpp` | — | Inicia o nó (pré-FSM) |
-| `drone_controller_completo.cpp` | Todos | Dispatcher; callbacks setam `state_voo_` |
-| `fsm_state0_wait.cpp` | **0** | Nenhuma (aguarda callback externa) |
-| `fsm_takeoff.cpp` | **1** | `1 → 2` (altitude atingida) |
-| `fsm_hover.cpp` | **2** | `2 → 3` (`controlador_ativo_`); `2 → 4` (pouso) |
-| `fsm_trajectory.cpp` | **3** | `3 → 2` (trajetória concluída); `3 → 4` (pouso) |
-| `fsm_landing.cpp` | **4** | `4 → 0` (DISARM confirmado) |
-| `command_queue.cpp` | Todos | Auditoria; sem transições diretas |
-| `waypoint_validation.cpp` | — | Bloqueia transições inválidas (rejeita waypoints) |
-| `Drone_codegen.cpp` | **3** | Sem transições; fornece `zdot_des` |
-| `TrajectoryPlanner_codegen.cpp` | **3** | Sem transições; fornece `(Xd, Vd, Ad)` |
-| `cos.cpp` | — | Artefato vazio |
-| `minOrMax.cpp` | **3** (indireto) | Sem transições; satura saídas do planner |
-| `mldivide.cpp` | **3** (init) | Sem transições; resolve coeficientes polinomiais |
-| `rt_nonfinite.cpp` | — | Constantes globais; sem lógica de controle |
-| `sqrt.cpp` | — | Artefato vazio |
+| Arquivo | Dir | Estado FSM | Transições que desencadeia |
+|---------|-----|-----------|---------------------------|
+| `main.cpp` | `src/` | — | Inicia o nó (pré-FSM) |
+| `drone_controller_completo.cpp` | `src/` | Todos | Dispatcher; callbacks setam `state_voo_` |
+| `fsm_state0_wait.cpp` | `src/` | **0** | Nenhuma (aguarda callback externa) |
+| `fsm_takeoff.cpp` | `src/` | **1** | `1 → 2` (altitude atingida) |
+| `fsm_hover.cpp` | `src/` | **2** | `2 → 3` (`controlador_ativo_`); `2 → 4` (pouso) |
+| `fsm_trajectory.cpp` | `src/` | **3** | `3 → 2` (trajetória concluída); `3 → 4` (pouso) |
+| `fsm_landing.cpp` | `src/` | **4** | `4 → 0` (DISARM confirmado) |
+| `command_queue.cpp` | `src/` | Todos | Auditoria; sem transições diretas |
+| `waypoint_validation.cpp` | `src/` | — | Bloqueia transições inválidas (rejeita waypoints) |
+| `Drone_codegen.cpp` | `src/` | **3** | Sem transições; fornece `zdot_des` |
+| `TrajectoryPlanner_codegen.cpp` | `src/` | **3** | Sem transições; fornece `(Xd, Vd, Ad)` |
+| `cos.cpp` | `src/` | — | Artefato vazio |
+| `minOrMax.cpp` | `src/` | **3** (indireto) | Sem transições; satura saídas do planner |
+| `mldivide.cpp` | `src/` | **3** (init) | Sem transições; resolve coeficientes polinomiais |
+| `rt_nonfinite.cpp` | `src/` | — | Constantes globais; sem lógica de controle |
+| `sqrt.cpp` | `src/` | — | Artefato vazio |
+| `drone_config.yaml` | `config/` | — | Define valores padrão de todos os parâmetros |
+| `drone_controller_completo.hpp` | `include/my_drone_controller/` | Todos | Declara a classe; expõe máscaras e constantes |
+| `command_queue.hpp` | `include/my_drone_controller/` | Todos | Declara `CommandQueue`; sem lógica de controle |
+| `waypoint_validation.hpp` | `include/my_drone_controller/` | — | Declara `validate_waypoint`/`validate_pose` |
+| `drone_config.h` | `include/` | — | Define `struct DroneConfig` com defaults |
+| `Drone_codegen.h` | `include/` | **3** | Declara API do controlador PID codegen |
+| `TrajectoryPlanner_codegen.h` | `include/` | **3** | Declara API do planner codegen |
+| `rtwtypes.h` | `include/` | — | Tipos base (MATLAB Coder); sem lógica |
+| `rt_nonfinite.h` | `include/` | — | Declara variáveis NaN/Inf externas |
+| `cos.h` | `include/` | — | Declara `coder::b_cos` |
+| `sqrt.h` | `include/` | — | Declara `coder::b_sqrt` |
+| `minOrMax.h` | `include/` | **3** (indireto) | Declara saturação de array |
+| `mldivide.h` | `include/` | **3** (init) | Declara solver LU |
+| `coder_array.h` | `include/` | **3** | Template de array dinâmico codegen |
+
+---
+
+## 17. `drone_config.yaml`
+
+### Papel / Responsabilidade
+
+Arquivo de parâmetros ROS 2 lido em tempo de execução pelo nó
+`drone_controller_completo`. Define os **valores padrão operacionais** de todos os
+parâmetros numéricos e booleanos da classe `DroneControllerCompleto`, permitindo
+ajustes de missão sem recompilação.
+
+### Relação com `load_parameters()`
+
+Cada chave do YAML é declarada e lida em `DroneControllerCompleto::load_parameters()`
+via `declare_parameter` + `get_parameter`. Veja a documentação detalhada por blocos
+em **[17-configuracao-yaml.md](17-configuracao-yaml.md)**.
+
+### Como carregar
+
+```bash
+ros2 run my_drone_controller drone_node \
+     --ros-args --params-file /path/to/my_drone_controller/config/drone_config.yaml
+```
+
+---
+
+## 18. `drone_controller_completo.hpp`
+
+### Papel / Responsabilidade
+
+Declaração completa da classe `DroneControllerCompleto` (nó ROS 2). Define a FSM
+de 5 estados, todos os membros privados (flags, timers, filas, codegen), as
+constantes de máscara `type_mask` e as interfaces públicas.
+
+Incluído por: `main.cpp`, `drone_controller_completo.cpp`, todos os `fsm_*.cpp`.
+
+Documentação detalhada por blocos em **[18-headers-e-contratos.md](18-headers-e-contratos.md)**.
+
+---
+
+## 19. `command_queue.hpp`
+
+### Papel / Responsabilidade
+
+Declara `CommandQueue`, `Command`, `CommandType` e `CommandStatus`. Toda a lógica
+de enfileiramento, confirmação, timeout e log de auditoria é contratada aqui.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#2-command_queuehpp--api-da-fila-de-auditoria)**.
+
+---
+
+## 20. `waypoint_validation.hpp`
+
+### Papel / Responsabilidade
+
+Declara as funções livres `validate_waypoint()` e `validate_pose()` que aplicam as
+restrições de NaN/Inf, altitude e distância XY definidas em `DroneConfig`.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#3-waypoint_validationhpp--api-de-validação-de-waypoints)**.
+
+---
+
+## 21. `drone_config.h`
+
+### Papel / Responsabilidade
+
+Define `struct DroneConfig` com todos os parâmetros e seus valores padrão
+*hard-coded* como membros C++. Em runtime os valores são sobrescritos pelo YAML
+via `load_parameters()`.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#4-drone_configh--struct-de-configuração)**.
+
+---
+
+## 22. `Drone_codegen.h`
+
+### Papel / Responsabilidade
+
+Header gerado pelo MATLAB Coder que declara a classe `Drone_codegen`, responsável
+pelo controle PID de posição (estados 3D e calcula `zdot_des`).
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#5-drone_codegenh-e-trajectoryplanner_codegenh)**.
+
+---
+
+## 23. `TrajectoryPlanner_codegen.h`
+
+### Papel / Responsabilidade
+
+Header gerado pelo MATLAB Coder que declara a classe `TrajectoryPlanner_codegen`,
+responsável por computar trajetórias polinomiais (posição, velocidade, aceleração
+desejadas) a partir da sequência de waypoints.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#5-drone_codegenh-e-trajectoryplanner_codegenh)**.
+
+---
+
+## 24. `rtwtypes.h`
+
+### Papel / Responsabilidade
+
+Define os tipos base usados em todo o código gerado pelo MATLAB Coder:
+`real_T` (double), `real32_T` (float), `boolean_T` (uint8), `int32_T`, etc.
+Garante portabilidade entre arquiteturas (x86, ARM).
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#6-rtwtypesh--tipos-base-matlab-coder)**.
+
+---
+
+## 25. `rt_nonfinite.h`
+
+### Papel / Responsabilidade
+
+Declara as variáveis globais `rtNaN`, `rtInf`, `rtMinusInf` (e versões float)
+como `extern`. A inicialização ocorre em `rt_nonfinite.cpp`.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh)**.
+
+---
+
+## 26. `cos.h`
+
+### Papel / Responsabilidade
+
+Declara `coder::b_cos(double &x)` — wrapper do MATLAB Coder em torno de `std::cos`.
+Incluído por `Drone_codegen.cpp` para cálculos trigonométricos do controlador.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh)**.
+
+---
+
+## 27. `sqrt.h`
+
+### Papel / Responsabilidade
+
+Declara `coder::b_sqrt(double &x)` — wrapper do MATLAB Coder em torno de `std::sqrt`.
+Incluído por `Drone_codegen.cpp`.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh)**.
+
+---
+
+## 28. `minOrMax.h`
+
+### Papel / Responsabilidade
+
+Declara as funções de saturação de arrays geradas pelo MATLAB Coder
+(`maximum`/`minimum` elemento a elemento). Usada pelo controlador PID para
+saturar velocidades em ±12 m/s.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh)**.
+
+---
+
+## 29. `mldivide.h`
+
+### Papel / Responsabilidade
+
+Declara `coder::mldivide(const double A[36], double B[6])` — solver de sistema
+linear 6×6 por eliminação gaussiana com pivotamento parcial. Equivalente ao
+operador `A\B` do MATLAB.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#7-headers-matemáticos-codegen-cosh-sqrth-minormaxh-mldivideh-rt_nonfiniteh)**.
+
+---
+
+## 30. `coder_array.h`
+
+### Papel / Responsabilidade
+
+Template C++ gerado pelo MATLAB Coder que implementa arrays dinâmicos
+(`coder::array<T,N>`). Usado pelo planner e pelo controlador codegen para
+representar vetores de tamanho variável sem depender de `std::vector`.
+
+Documentação detalhada em **[18-headers-e-contratos.md](18-headers-e-contratos.md#8-coder_arrayh--template-de-array-codegen)**.
+
+---
