@@ -59,11 +59,11 @@ windows:
         - |
           waitForGazebo; sleep 5
           source ~/ros2_ws/install/setup.bash
-          ros2 launch drone_control tf_body_fallback.launch.py
+          ros2 launch yolo_pad_pose tf_body_fallback.launch.py
         - |
           waitForGazebo; sleep 5
           source ~/ros2_ws/install/setup.bash
-          ros2 launch drone_control tf_camera_static.launch.py
+          ros2 launch yolo_pad_pose tf_camera_static.launch.py
         - | 
           waitForGazebo; sleep 5
           source ~/ros2_ws/install/setup.bash
