@@ -1,8 +1,8 @@
 # Mensagens Customizadas — `drone_control`
 
-> **Objetivo:** explicar por blocos de código cada arquivo `.msg` do pacote
-> `drone_control`, cobrindo campos, semântica, convenções de uso e exemplos
-> de publicação em C++ e via CLI.
+> **Objetivo:** explicar **linha por linha** cada arquivo `.msg` do pacote
+> `drone_control`, cobrindo cada campo, sua semântica, restrições de valor,
+> quais nós produzem/consomem e exemplos completos de uso em C++ e CLI.
 >
 > Linguagem: **português** | Estilo: guia acadêmico de implementação.
 > Última sincronização: branch `main`, 2026-04-13.
@@ -11,13 +11,7 @@
 
 ## 1. `YawOverride.msg`
 
-### Papel / Responsabilidade
-
-Controla o mecanismo de **override de yaw** do `my_drone_controller`: permite que
-um nó externo (como `drone_yaw_360`) assuma temporariamente o controle da
-orientação do drone, sobrescrevendo o controle de yaw da FSM de trajetória.
-
-### Definição completa
+### Definição completa do arquivo
 
 ```
 bool enable
@@ -25,96 +19,109 @@ float32 yaw_rate
 float32 timeout
 ```
 
-### Bloco 1 — Campo `enable`
+### Linha 1 — `bool enable`
 
 ```
 bool enable
 ```
 
-**Semântica:** liga/desliga o override.
+**Tipo:** `bool` (1 byte, `true`/`false`).
 
-- `enable = true` → o `my_drone_controller` para de usar o yaw calculado pela
-  trajetória e aplica `yaw_rate` diretamente no setpoint de velocidade angular.
-- `enable = false` → o override é desativado e o controlador retorna ao controle
-  normal de yaw (heading para o próximo waypoint ou heading mantido).
+**Semântica:** liga e desliga o mecanismo de override de yaw no `my_drone_controller`.
 
-**Caso de uso típico:**
+- `enable = true` → o controlador suspende o cálculo de yaw da FSM de trajetória
+  e aplica `yaw_rate` diretamente no campo angular do setpoint MAVROS.
+- `enable = false` → o override é desativado; o controlador retorna ao controle
+  normal de heading (apontar para o próximo waypoint ou manter o heading atual).
+
+**Por que `bool` e não um enum?** O override tem apenas dois estados relevantes
+(ativo/inativo); um `bool` é suficiente e mais simples de publicar via CLI e código.
+
+**Exemplo de uso no nó `drone_yaw_360`:**
 
 ```cpp
-// Ativar override antes de iniciar o giro
+// Ativar — ao iniciar o giro
 drone_control::msg::YawOverride msg;
-msg.enable = true;
-msg.yaw_rate = 1.0f;  // rad/s CCW
-msg.timeout = 15.0f;
+msg.enable = true;   // ← esta linha ativa o mecanismo
+pub_->publish(msg);
+
+// Desativar — ao concluir o giro
+msg.enable = false;  // ← esta linha libera o controle de volta à FSM
 pub_->publish(msg);
 ```
 
-### Bloco 2 — Campo `yaw_rate`
+### Linha 2 — `float32 yaw_rate`
 
 ```
 float32 yaw_rate
 ```
 
-**Semântica:** velocidade angular desejada em **rad/s** em torno do eixo Z (yaw).
+**Tipo:** `float32` (IEEE 754 single-precision, 4 bytes).
 
-- Positivo (`> 0`) → rotação anti-horária (CCW) vista de cima — sentido
-  matemático positivo no referencial ENU.
-- Negativo (`< 0`) → rotação horária (CW).
-- Zero → sem rotação; usado para desativar suavemente sem mudar `enable`.
+**Semântica:** velocidade angular desejada em **rad/s** em torno do eixo Z (eixo de yaw)
+no referencial ENU.
 
-**Faixa típica:** `[-2π, +2π]` rad/s; valores muito altos podem causar
-instabilidade dependendo do controlador de atitude do FCU.
+- `yaw_rate > 0` → rotação **anti-horária (CCW)** vista de cima — sentido matemático
+  positivo no referencial ENU (East-North-Up). Ex.: `1.0` rad/s = ≈57°/s CCW.
+- `yaw_rate < 0` → rotação **horária (CW)**. Ex.: `-0.5` rad/s = ≈29°/s CW.
+- `yaw_rate = 0` → sem rotação; usado apenas quando `enable = false` para indicar
+  intenção de parada.
 
-### Bloco 3 — Campo `timeout`
+**Faixa típica:** `[-2.0, +2.0]` rad/s. Valores acima de 2 rad/s (≈115°/s) podem
+causar instabilidade no controlador de atitude do FCU (PX4) dependendo da
+configuração de ganhos.
+
+**Como `drone_yaw_360.cpp` define o sinal:**
+
+```cpp
+// Linha 103 de drone_yaw_360.cpp:
+msg.yaw_rate = (yaw_target_delta_ >= 0.0) ? std::abs(yaw_rate_) : -std::abs(yaw_rate_);
+//                       ↑                         ↑                      ↑
+//         se yaw_target > 0 (CCW)    usa positivo            usa negativo (CW)
+```
+
+- `yaw_target_delta_ >= 0.0` → o alvo é uma rotação CCW → `yaw_rate` recebe valor positivo.
+- `yaw_target_delta_ < 0.0` → o alvo é uma rotação CW → `yaw_rate` recebe valor negativo.
+- `std::abs(yaw_rate_)` garante que o parâmetro de configuração pode ser dado em módulo
+  independentemente do sentido.
+
+### Linha 3 — `float32 timeout`
 
 ```
 float32 timeout
 ```
 
-**Semântica:** tempo máximo em segundos que o override permanece ativo.
-Serve como **válvula de segurança**: se o nó publicador encerrar abruptamente
-(crash, Ctrl+C), o `my_drone_controller` desativa o override automaticamente
-após `timeout` segundos sem receber um novo comando.
+**Tipo:** `float32` (IEEE 754 single-precision, 4 bytes), representando segundos.
 
-- Valor `0.0` com `enable = false` → desativa imediatamente sem timeout.
-- Valor `15.0` → garante que, mesmo se `drone_yaw_360` travar, o drone não
-  gira indefinidamente.
+**Semântica:** tempo máximo (em segundos) que o override permanece ativo após a
+última mensagem recebida. Funciona como **válvula de segurança**: se o nó
+publicador encerrar abruptamente (crash, Ctrl+C, kill), o `my_drone_controller`
+desativa o override automaticamente após `timeout` segundos.
 
-### Como `drone_yaw_360` usa esta mensagem
+- `timeout = 0.0` com `enable = false` → desativa imediatamente.
+- `timeout = 15.0` → garante que, mesmo se `drone_yaw_360` travar, o drone
+  não gira indefinidamente por mais de 15 segundos.
+
+**Linha no código do `drone_yaw_360.cpp`:**
 
 ```cpp
-// Ativar — publicado uma única vez ao início do giro
-void publish_enable() {
-    drone_control::msg::YawOverride msg;
-    msg.enable   = true;
-    msg.yaw_rate = (yaw_target_delta_ >= 0.0) ? std::abs(yaw_rate_) : -std::abs(yaw_rate_);
-    msg.timeout  = 15.0f;
-    pub_->publish(msg);
-}
-
-// Desativar — publicado ao atingir o ângulo acumulado
-void publish_disable() {
-    drone_control::msg::YawOverride msg;
-    msg.enable   = false;
-    msg.yaw_rate = 0.0;
-    msg.timeout  = 0.0;
-    pub_->publish(msg);
-    rclcpp::shutdown();
-}
+// Linha 104 — valor fixo de segurança
+msg.timeout = 15.0f;
+// ↑ 15 s é mais que suficiente para um giro de 360° a 0.8 rad/s (≈7.85 s)
 ```
 
-### Exemplo CLI
+### Exemplo CLI completo
 
 ```bash
-# Ativar giro CCW a 0.8 rad/s por até 15 s
+# Ativar giro CCW a 0.8 rad/s com timeout de 15 s
 ros2 topic pub /uav1/yaw_override/cmd drone_control/msg/YawOverride \
   "{enable: true, yaw_rate: 0.8, timeout: 15.0}" --once
 
-# Desativar imediatamente
+# Desativar override imediatamente
 ros2 topic pub /uav1/yaw_override/cmd drone_control/msg/YawOverride \
   "{enable: false, yaw_rate: 0.0, timeout: 0.0}" --once
 
-# Monitorar estado do override
+# Monitorar estado do override em tempo real
 ros2 topic echo /uav1/yaw_override/cmd
 ```
 
@@ -122,14 +129,7 @@ ros2 topic echo /uav1/yaw_override/cmd
 
 ## 2. `Waypoint4D.msg`
 
-### Papel / Responsabilidade
-
-Representa um **waypoint de navegação tridimensional com orientação** (yaw)
-opcional. É a unidade básica de trajetória "rica" no sistema — ao contrário
-do `geometry_msgs/Pose` simples em `/waypoints`, este tipo permite especificar
-explicitamente a orientação angular desejada no waypoint.
-
-### Definição completa
+### Definição completa do arquivo
 
 ```
 # 4D waypoint: position (x, y, z) plus optional absolute yaw around the Z axis.
@@ -139,86 +139,126 @@ geometry_msgs/Pose pose
 float32 yaw
 ```
 
-### Bloco 1 — Campo `pose`
+### Linhas 1-3 — Comentários de documentação
+
+```
+# 4D waypoint: position (x, y, z) plus optional absolute yaw around the Z axis.
+# Convention: yaw = NaN means "no yaw provided – keep current heading".
+# yaw is in radians; values are normalized to [-pi, pi] by the controller.
+```
+
+| Linha de comentário | O que documenta |
+|--------------------|-----------------|
+| `# 4D waypoint: ...` | Explica o conceito: posição 3D (x,y,z) + orientação (yaw) = 4 graus de liberdade = "4D" |
+| `# Convention: yaw = NaN ...` | **Convenção crítica**: `NaN` (Not a Number) é usado como sentinela para indicar "sem yaw especificado", diferenciando de `yaw=0` que é um yaw válido (aponta para Leste) |
+| `# yaw is in radians; ...` | Unidade e normalização: yaw em radianos, normalizado pelo controlador para o intervalo canônico `[-π, π]` |
+
+### Linha 4 — `geometry_msgs/Pose pose`
 
 ```
 geometry_msgs/Pose pose
 ```
 
-**Semântica:** posição (x, y, z) e orientação quaternion do waypoint no frame
-de referência configurado (tipicamente `map`).
+**Tipo composto** — contém dois sub-campos:
 
-- Em uso típico, apenas `pose.position.{x,y,z}` é relevante para navegação.
-- `pose.orientation` pode ser identidade `{w: 1.0}` — o yaw é controlado
-  pelo campo `yaw`, não pela quaternion.
-- Referencial: **ENU** (East-North-Up). `+x` → Leste, `+y` → Norte, `+z` → Cima.
+```
+geometry_msgs/Pose:
+  geometry_msgs/Point position
+    float64 x    ← coordenada Este (ENU), metros
+    float64 y    ← coordenada Norte (ENU), metros
+    float64 z    ← coordenada Cima (ENU), metros
+  geometry_msgs/Quaternion orientation
+    float64 x    ← componente i do quaternion
+    float64 y    ← componente j do quaternion
+    float64 z    ← componente k do quaternion
+    float64 w    ← componente escalar do quaternion
+```
 
-### Bloco 2 — Campo `yaw`
+**Uso prático no `drone_control`:**
+
+- `pose.position.{x,y,z}` → coordenadas do waypoint no frame `map` (ENU).
+- `pose.orientation` → tipicamente quaternion identidade `{x:0, y:0, z:0, w:1}`.
+  A orientação angular é controlada pelo campo `yaw`; o quaternion em `pose` não
+  é usado para controle de heading.
+
+**Por que incluir `Pose` em vez de apenas `Point`?** Para compatibilidade com
+a mensagem `geometry_msgs/PoseArray` usada em `/waypoints` e para eventuais
+extensões futuras que usem a orientação completa.
+
+### Linha 5 — `float32 yaw`
 
 ```
 float32 yaw
 ```
 
-**Semântica:** ângulo de yaw absoluto em **radianos**, normalizado para `[-π, π]`
-pelo controlador ao processar o waypoint.
+**Tipo:** `float32` (IEEE 754 single-precision, 4 bytes), representando radianos.
 
-- `yaw = 0.0` → drone aponta para Leste (eixo +X do ENU).
-- `yaw = π/2 ≈ 1.5708` → drone aponta para Norte (+Y).
-- `yaw = π ≈ 3.1416` → drone aponta para Oeste (-X).
-- `yaw = NaN` → **convenção especial**: indica que o yaw não foi especificado;
-  o controlador mantém o heading atual do drone.
+**Semântica:** ângulo de yaw absoluto desejado no waypoint, em radianos, no
+referencial ENU.
 
-**Por que NaN e não 0?**  
-Zero é um valor de yaw válido (aponta para Leste). Usar `NaN` permite distinguir
-"sem especificação" de "apontar para Leste", sem precisar de um campo booleano
-extra.
+| Valor | Direção do drone (ENU) |
+|-------|----------------------|
+| `0.0` | Leste (+X) |
+| `π/2 ≈ 1.5708` | Norte (+Y) |
+| `π ≈ 3.1416` | Oeste (-X) |
+| `-π/2 ≈ -1.5708` | Sul (-Y) |
+| `NaN` | Manter heading atual (convenção especial) |
 
-### Exemplo C++ de criação de um Waypoint4D
+**Por que `NaN` e não um campo booleano separado?**
+
+`float32` em C++ pode representar `NaN` de forma nativa:
+```cpp
+#include <limits>
+float yaw_no_spec = std::numeric_limits<float>::quiet_NaN();
+// std::isnan(yaw_no_spec) == true
+```
+
+Usar `NaN` evita adicionar um campo booleano extra (`has_yaw: bool`) que
+adicionaria 1 byte de overhead e complicaria a serialização. O custo é que
+o código consumidor deve verificar `std::isnan(waypoint.yaw)` antes de usar.
+
+**Normalização:** o `my_drone_controller` normaliza o valor para `[-π, π]` ao
+processar o waypoint. Portanto, `yaw = 4.71` (≡ `-π/2 + 2π`) é tratado
+da mesma forma que `yaw = -1.5708`.
+
+### Exemplo C++ completo de criação
 
 ```cpp
 #include "drone_control/msg/waypoint4_d.hpp"
 #include <cmath>
 #include <limits>
 
-// Waypoint em (3.0, 2.0, 1.5) com yaw apontando para Norte (π/2 rad)
+// ── Waypoint com posição E yaw especificados ──────────────────────────────
 drone_control::msg::Waypoint4D wp;
-wp.pose.position.x = 3.0;
-wp.pose.position.y = 2.0;
-wp.pose.position.z = 1.5;
-wp.pose.orientation.w = 1.0;  // quaternion identidade
-wp.yaw = M_PI / 2.0f;        // 90° → Norte
 
-// Waypoint sem yaw (manter heading atual)
+// Campo pose.position: coordenadas ENU em metros
+wp.pose.position.x = 3.0;   // 3 m para Leste
+wp.pose.position.y = 2.0;   // 2 m para Norte
+wp.pose.position.z = 1.5;   // 1.5 m de altitude
+
+// Campo pose.orientation: quaternion identidade (não usamos para controle de heading)
+wp.pose.orientation.x = 0.0;
+wp.pose.orientation.y = 0.0;
+wp.pose.orientation.z = 0.0;
+wp.pose.orientation.w = 1.0;
+
+// Campo yaw: 90° = π/2 rad = drone aponta para Norte
+wp.yaw = static_cast<float>(M_PI / 2.0);  // cast para float32
+
+// ── Waypoint SEM yaw especificado (manter heading atual) ─────────────────
 drone_control::msg::Waypoint4D wp_no_yaw;
 wp_no_yaw.pose.position.x = 1.0;
 wp_no_yaw.pose.position.y = 0.0;
 wp_no_yaw.pose.position.z = 1.5;
-wp_no_yaw.yaw = std::numeric_limits<float>::quiet_NaN();
-```
-
-### Exemplo CLI
-
-```bash
-# Inspecionar o tipo
-ros2 interface show drone_control/msg/Waypoint4D
-
-# Publicar um waypoint 4D isolado (tipicamente não usado sozinho — use Waypoint4DArray)
-ros2 topic pub /waypoint_goal_4d drone_control/msg/Waypoint4D \
-  "{pose: {position: {x: 2.0, y: 1.0, z: 1.5}, orientation: {w: 1.0}}, yaw: 1.5708}" \
-  --once
+wp_no_yaw.pose.orientation.w = 1.0;
+wp_no_yaw.yaw = std::numeric_limits<float>::quiet_NaN();  // convenção "sem yaw"
 ```
 
 ---
 
 ## 3. `Waypoint4DArray.msg`
 
-### Papel / Responsabilidade
-
-Container de alto nível para enviar uma **trajetória completa** de waypoints
-com orientação ao `my_drone_controller`. O cabeçalho ROS 2 fornece o
-frame de referência e o timestamp da trajetória.
-
-### Definição completa
+### Definição completa do arquivo
 
 ```
 # Array of 4D waypoints with a common header (frame_id, timestamp).
@@ -226,93 +266,124 @@ std_msgs/Header header
 drone_control/Waypoint4D[] waypoints
 ```
 
-### Bloco 1 — Campo `header`
+### Linha 1 — Comentário de documentação
+
+```
+# Array of 4D waypoints with a common header (frame_id, timestamp).
+```
+
+Documenta que o array compartilha um único header ROS 2 entre todos os waypoints.
+Isso implica que todos os waypoints do array estão no mesmo frame de referência
+e foram gerados no mesmo instante de tempo (ou pelo menos pelo mesmo publicador).
+
+### Linha 2 — `std_msgs/Header header`
 
 ```
 std_msgs/Header header
 ```
 
-**Semântica:** metadados da trajetória.
+**Tipo composto:**
 
-- `header.frame_id` → frame de referência dos waypoints (ex.: `"map"`).
-- `header.stamp` → timestamp de criação; o controlador pode usar para
-  verificar a age da mensagem e descartar trajetórias antigas.
+```
+std_msgs/Header:
+  builtin_interfaces/Time stamp
+    int32 sec     ← segundos desde a epoch ROS
+    uint32 nanosec ← nanosegundos fracionários
+  string frame_id  ← identificador do frame de referência (ex.: "map")
+```
 
-**Uso típico:**
+**Sub-campo `stamp`:**
+- Usado pelo controlador para verificar a "freshness" (idade) da mensagem.
+- Se `stamp` for muito antigo, o controlador pode descartar a trajetória para
+  evitar executar comandos obsoletos.
+- Publicar com `this->now()` garante timestamp atual.
+
+**Sub-campo `frame_id`:**
+- Define em qual sistema de coordenadas os waypoints estão expressos.
+- Valor típico: `"map"` — frame ENU fixo no mundo.
+- O controlador usa `frame_id` para validar que os waypoints estão no frame
+  esperado antes de executar a trajetória.
+
+**Uso no código C++:**
 
 ```cpp
 drone_control::msg::Waypoint4DArray traj;
+
+// stamp: registra o instante de criação da trajetória
+traj.header.stamp = this->now();
+// frame_id: declara que os waypoints estão no frame "map" (ENU)
 traj.header.frame_id = "map";
-traj.header.stamp    = this->now();
 ```
 
-### Bloco 2 — Campo `waypoints`
+### Linha 3 — `drone_control/Waypoint4D[] waypoints`
 
 ```
 drone_control/Waypoint4D[] waypoints
 ```
 
-**Semântica:** sequência **ordenada** de waypoints 4D que o drone deve percorrer.
-O controlador processa os waypoints na ordem do array: `waypoints[0]`,
-`waypoints[1]`, …, `waypoints[N-1]`.
+**Tipo:** array dinâmico (`[]`) de `drone_control/Waypoint4D`.
 
-**Atenção:** um array vazio (`waypoints = []`) pode ser interpretado como
-"limpar trajetória atual" pelo controlador — verifique o comportamento do
-`my_drone_controller` para este caso.
+- `[]` sem tamanho fixo → array de tamanho variável (dinâmico). O publisher
+  decide quantos waypoints incluir.
+- A ordem do array é **significativa**: o controlador processa `waypoints[0]`,
+  depois `waypoints[1]`, ..., `waypoints[N-1]`.
+- Array vazio (`waypoints = []`) → comportamento depende do controlador;
+  pode ser interpretado como "cancelar trajetória atual".
 
-### Bloco 3 — Relação com `/waypoints` (PoseArray)
+**Relação com o tipo `Waypoint4D`:**
 
-| Tipo | Tópico típico | Suporte a yaw | Quando usar |
-|------|--------------|---------------|-------------|
-| `geometry_msgs/PoseArray` | `/waypoints` | ✗ (sem yaw) | Comandos simples de posição |
-| `drone_control/Waypoint4DArray` | `/waypoints_4d` | ✓ (yaw por waypoint) | Missões com orientação explícita |
+```
+Waypoint4DArray.waypoints[i]  =  Waypoint4D {
+  geometry_msgs/Pose pose {
+    Point    position    { x, y, z }
+    Quaternion orientation { x, y, z, w }
+  }
+  float32 yaw
+}
+```
 
-### Exemplo C++ completo
+**Uso no código C++ para montar uma trajetória:**
 
 ```cpp
-#include "drone_control/msg/waypoint4_d_array.hpp"
-#include "drone_control/msg/waypoint4_d.hpp"
-#include <cmath>
-
-// Criar trajetória de 3 waypoints com yaw crescente
 drone_control::msg::Waypoint4DArray traj;
-traj.header.frame_id = "map";
 traj.header.stamp    = this->now();
+traj.header.frame_id = "map";
 
-// Waypoint 1: ir para (2, 0, 1.5) apontando para Leste
+// Waypoint 1: ir para (2, 0, 1.5) apontando para Leste (yaw=0)
 drone_control::msg::Waypoint4D wp1;
-wp1.pose.position.x = 2.0;
-wp1.pose.position.y = 0.0;
-wp1.pose.position.z = 1.5;
-wp1.pose.orientation.w = 1.0;
-wp1.yaw = 0.0f;
+wp1.pose.position.x = 2.0;    // 2 m Leste
+wp1.pose.position.y = 0.0;    // 0 m Norte
+wp1.pose.position.z = 1.5;    // 1.5 m altitude
+wp1.pose.orientation.w = 1.0; // quaternion identidade
+wp1.yaw = 0.0f;               // 0 rad = Leste
 traj.waypoints.push_back(wp1);
 
-// Waypoint 2: ir para (2, 2, 1.5) apontando para Norte
+// Waypoint 2: ir para (2, 2, 1.5) apontando para Norte (yaw=π/2)
 drone_control::msg::Waypoint4D wp2;
 wp2.pose.position.x = 2.0;
-wp2.pose.position.y = 2.0;
+wp2.pose.position.y = 2.0;    // 2 m Norte
 wp2.pose.position.z = 1.5;
 wp2.pose.orientation.w = 1.0;
-wp2.yaw = static_cast<float>(M_PI / 2.0);  // 90°
+wp2.yaw = static_cast<float>(M_PI / 2.0);  // 1.5708 rad = Norte
 traj.waypoints.push_back(wp2);
 
-// Waypoint 3: voltar para (0, 0, 1.5) sem especificação de yaw
+// Waypoint 3: voltar à origem sem especificação de yaw
 drone_control::msg::Waypoint4D wp3;
 wp3.pose.position.x = 0.0;
 wp3.pose.position.y = 0.0;
 wp3.pose.position.z = 1.5;
 wp3.pose.orientation.w = 1.0;
-wp3.yaw = std::numeric_limits<float>::quiet_NaN();  // manter heading
+wp3.yaw = std::numeric_limits<float>::quiet_NaN();  // NaN = manter heading
 traj.waypoints.push_back(wp3);
 
+// traj agora contém 3 waypoints na sequência correta
 pub_->publish(traj);
 ```
 
-### Exemplo CLI
+### Exemplo CLI completo
 
 ```bash
-# Enviar trajetória com dois waypoints
+# Enviar trajetória de 2 waypoints com yaw explícito
 ros2 topic pub /waypoints_4d drone_control/msg/Waypoint4DArray '{
   header: {frame_id: "map"},
   waypoints: [
@@ -324,31 +395,37 @@ ros2 topic pub /waypoints_4d drone_control/msg/Waypoint4DArray '{
 # Monitorar trajetórias chegando
 ros2 topic echo /waypoints_4d
 
-# Verificar o tipo completo incluindo Waypoint4D aninhado
+# Inspecionar o tipo completo (mostra Waypoint4D aninhado)
 ros2 interface show drone_control/msg/Waypoint4DArray
 ```
 
 ---
 
-## 4. Relação entre as mensagens
+## 4. Diagrama de composição dos tipos
 
 ```
-Waypoint4DArray
-  ├── header (std_msgs/Header)
-  │     ├── stamp (builtin_interfaces/Time)
-  │     └── frame_id (string)
-  └── waypoints[] (Waypoint4D)
-        ├── pose (geometry_msgs/Pose)
-        │     ├── position (geometry_msgs/Point) ← x, y, z
-        │     └── orientation (geometry_msgs/Quaternion) ← tipicamente identidade
-        └── yaw (float32) ← rad; NaN = sem especificação
+drone_control/Waypoint4DArray
+├── std_msgs/Header header
+│   ├── builtin_interfaces/Time stamp
+│   │   ├── int32 sec          ← segundos
+│   │   └── uint32 nanosec     ← nanosegundos
+│   └── string frame_id        ← "map" (tipicamente)
+└── drone_control/Waypoint4D[] waypoints
+    └── [cada elemento]:
+        ├── geometry_msgs/Pose pose
+        │   ├── geometry_msgs/Point position
+        │   │   ├── float64 x  ← Leste (ENU), metros
+        │   │   ├── float64 y  ← Norte (ENU), metros
+        │   │   └── float64 z  ← Cima (ENU), metros
+        │   └── geometry_msgs/Quaternion orientation
+        │       ├── float64 x  ← tipicamente 0
+        │       ├── float64 y  ← tipicamente 0
+        │       ├── float64 z  ← tipicamente 0
+        │       └── float64 w  ← tipicamente 1 (identidade)
+        └── float32 yaw        ← radianos; NaN = sem especificação
+
+drone_control/YawOverride
+├── bool    enable    ← true = ativar; false = desativar
+├── float32 yaw_rate  ← rad/s (+ = CCW, − = CW)
+└── float32 timeout   ← segundos; proteção contra travamentos
 ```
-
-**Regras de uso:**
-
-1. Sempre definir `header.frame_id` (tipicamente `"map"`).
-2. Usar `pose.orientation.w = 1.0` (quaternion identidade) quando apenas
-   a posição importa.
-3. Usar `yaw = NaN` quando o heading deve ser mantido entre waypoints.
-4. Normalizar yaw para `[-π, π]` antes de publicar para evitar valores
-   ambíguos (o controlador também normaliza, mas é boa prática).

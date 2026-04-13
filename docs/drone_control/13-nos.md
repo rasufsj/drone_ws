@@ -1,8 +1,8 @@
 # Nós C++ — `drone_control`
 
-> **Objetivo:** explicar cada nó C++ do pacote `drone_control` por blocos de
-> código — construtor, callbacks, FSM, helpers — cobrindo pub/sub, parâmetros,
-> fluxo de dados e exemplos de uso.
+> **Objetivo:** explicar **linha por linha** cada nó C++ do pacote `drone_control`,
+> cobrindo cada declaração de parâmetro, cada linha de lógica de callback e
+> cada transição de estado da FSM.
 >
 > Linguagem: **português** | Estilo: guia acadêmico de implementação.
 > Última sincronização: branch `main`, 2026-04-13.
@@ -11,864 +11,1077 @@
 
 ## 1. `camera_viewer.cpp`
 
-### Papel / Responsabilidade
-
-Nó de visualização em tempo real que assina dois tópicos de câmera do drone
-(`rgbd_front` e `rgbd_down`) e exibe os frames lado a lado em uma janela
-OpenCV. Usado como ferramenta de diagnóstico e monitoramento operacional.
-
-### Bloco 1 — Includes e classe
+### 1.1 Includes e declaração da classe
 
 ```cpp
-#include <rclcpp/rclcpp.hpp>
-#include <cv_bridge/cv_bridge.hpp>
-#include <sensor_msgs/msg/image.hpp>
-#include <opencv2/opencv.hpp>
-#include <map>
-#include <mutex>
+#include <rclcpp/rclcpp.hpp>    // Node, create_subscription, etc.
+#include <rclcpp/qos.hpp>       // SensorDataQoS
+#include <cv_bridge/cv_bridge.hpp>          // toCvShare: sensor_msgs/Image → cv::Mat
+#include <sensor_msgs/msg/image.hpp>        // sensor_msgs::msg::Image
+#include <opencv2/opencv.hpp>   // imshow, resize, cvtColor, namedWindow, waitKey
+#include <map>                  // std::map para armazenar imagens por tópico
+#include <mutex>                // std::mutex + std::lock_guard
+#include <string>               // std::string
+#include <vector>               // std::vector para manter subs vivas
 
 class CameraViewer : public rclcpp::Node {
 private:
-  std::map<std::string, cv::Mat> images_rgb_;
-  std::mutex image_mutex_;
+  std::map<std::string, cv::Mat> images_rgb_;   // topic → última imagem RGB recebida
+  std::mutex image_mutex_;                       // protege images_rgb_ de acesso concorrente
   std::vector<rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr> subs_;
-  int window_width_{1600};
-  int window_height_{900};
+  // Mantém shared_ptr das subscriptions vivos. Sem este vector, os shared_ptr
+  // seriam liberados ao sair do construtor e as subscriptions canceladas.
+  int window_width_{1600};    // sobrescrito por parâmetro ROS 2
+  int window_height_{900};    // sobrescrito por parâmetro ROS 2
 ```
 
-**O que este bloco faz:**
-
-- `images_rgb_` — mapa `topic → cv::Mat` com a imagem mais recente de cada câmera.
-  Usar `std::map` permite escalar para N câmeras sem mudar a lógica de renderização.
-- `image_mutex_` — protege `images_rgb_` de race condition entre o callback de
-  subscrição (que escreve) e o loop de renderização (que lê).
-- `subs_` — vector de subscriptions; mantém os objetos vivos enquanto o nó existe.
-
-### Bloco 2 — Construtor e subscriptions
+### 1.2 Construtor
 
 ```cpp
 CameraViewer() : Node("camera_viewer") {
-  declare_parameter<int>("window_width", 1600);
-  declare_parameter<int>("window_height", 900);
-  window_width_  = get_parameter("window_width").as_int();
+  declare_parameter<int>("window_width", 1600);    // declara param; default = 1600
+  declare_parameter<int>("window_height", 900);    // declara param; default = 900
+  window_width_  = get_parameter("window_width").as_int();    // lê valor final
   window_height_ = get_parameter("window_height").as_int();
 
   cv::namedWindow("Drone Cameras", cv::WINDOW_NORMAL);
+  // WINDOW_NORMAL: janela redimensionável pelo usuário
   cv::resizeWindow("Drone Cameras", window_width_, window_height_);
+  // Define tamanho inicial da janela
 
   const std::vector<std::string> topics = {
-      "/uav1/rgbd_front/color/image_raw",
-      "/uav1/rgbd_down/color/image_raw",
+      "/uav1/rgbd_front/color/image_raw",   // câmera frontal RGBD
+      "/uav1/rgbd_down/color/image_raw",    // câmera inferior RGBD
   };
 
-  auto qos = rclcpp::SensorDataQoS();  // Best-effort, volatile
+  auto qos = rclcpp::SensorDataQoS();
+  // SensorDataQoS = best-effort + volatile + depth 10
+  // best-effort: OK perder frames; evita buffer overflow em alta frequência
+  // volatile: não reenvia mensagens antigas para novos subscribers
 
   for (const auto &topic : topics) {
     auto sub = this->create_subscription<sensor_msgs::msg::Image>(
         topic, qos,
         [this, topic](const sensor_msgs::msg::Image::ConstSharedPtr msg) {
+        // Lambda captura 'this' (acesso ao nó) e 'topic' por valor
           this->imageCallback(msg, topic);
         });
-    subs_.push_back(sub);
+    subs_.push_back(sub);   // mantém o shared_ptr vivo enquanto o nó existir
   }
 }
 ```
 
-**O que este bloco faz:**
-
-- `SensorDataQoS()` usa perfil **best-effort, volatile** — adequado para imagens
-  de câmera onde perder um frame ocasionalmente é aceitável. Perfil `reliable`
-  causaria buffer overflow em alta frequência.
-- O lambda captura `topic` por valor, resolvendo qual câmera está chegando sem
-  precisar comparar o header da mensagem.
-
-### Bloco 3 — `spinRender()` — loop de renderização
+### 1.3 `spinRender()` — loop principal
 
 ```cpp
 void spinRender() {
-  rclcpp::WallRate rate(30);  // 30 Hz de renderização
+  rclcpp::WallRate rate(30);
+  // WallRate(30) = 30 Hz de wall clock.
+  // WallRate (não ROSRate) continua funcionando após rclcpp::shutdown().
 
   while (rclcpp::ok()) {
-    rclcpp::spin_some(shared_from_this());  // processa callbacks pendentes
+    rclcpp::spin_some(shared_from_this());
+    // spin_some: processa todos os callbacks pendentes SEM bloquear.
+    // Retorna imediatamente após esvaziar a fila.
 
-    // snapshot thread-safe das imagens
     std::map<std::string, cv::Mat> images_copy;
     {
       std::lock_guard<std::mutex> lock(image_mutex_);
+      // Adquire o mutex; liberado automaticamente ao sair do bloco {}
       images_copy = images_rgb_;
+      // Copia o mapa enquanto o lock está mantido → thread-safe
     }
+    // Daqui em diante, imageCallback pode escrever em images_rgb_ sem conflito.
 
     cv::Mat canvas_bgr = createCanvasBGR(images_copy);
-    cv::imshow("Drone Cameras", canvas_bgr);
+    // Monta o painel com as duas câmeras (operação pode ser lenta: resize, cvtColor)
+
+    cv::imshow("Drone Cameras", canvas_bgr);   // exibe o canvas na janela
 
     int key = cv::waitKey(1) & 0xFF;
-    if (key == 27) {       // ESC → shutdown
+    // waitKey(1): aguarda 1 ms por tecla; processa eventos de GUI da janela OpenCV.
+    // Sem waitKey, a janela trava e não responde ao mouse/teclado.
+    // & 0xFF: máscara para compatibilidade entre plataformas.
+
+    if (key == 27) {        // 27 = código ASCII de ESC
       rclcpp::shutdown();
       break;
     }
 
-    if (!rclcpp::ok()) break;
-    rate.sleep();
+    if (!rclcpp::ok()) {
+      break;   // Ctrl+C durante o loop
+    }
+    rate.sleep();   // dorme pelo tempo restante para manter 30 Hz
   }
 }
 ```
 
-**O que este bloco faz:**
-
-- `WallRate(30)` — usa wall clock (não ROS clock) para evitar crash no Ctrl+C
-  quando o contexto ROS 2 não está mais válido.
-- `spin_some` em vez de `spin` — processa callbacks sem bloquear, permitindo
-  que o loop de renderização continue rodando a 30 Hz independentemente da
-  frequência de chegada de imagens.
-- O **snapshot com mutex** copia o mapa antes de chamar `createCanvasBGR`,
-  liberando o lock antes da operação de rendering (que pode ser lenta).
-
-### Bloco 4 — `imageCallback()` — recepção e conversão
+### 1.4 `imageCallback()` — recepção e conversão
 
 ```cpp
 void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr &msg,
                    const std::string &topic) {
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+      "RX %s %ux%u encoding=%s",
+      topic.c_str(), msg->width, msg->height, msg->encoding.c_str());
+  // Loga no máximo 1x a cada 2000 ms; evita flood a 30 Hz.
+
   try {
-    auto cv_ptr = cv_bridge::toCvShare(msg, "rgb8");   // não copia desnecessariamente
+    auto cv_ptr = cv_bridge::toCvShare(msg, "rgb8");
+    // toCvShare: wrapper zero-copy (NÃO copia os bytes de imagem).
+    // "rgb8": converte para RGB 8-bit se necessário.
+
     const cv::Mat &rgb = cv_ptr->image;
+    // Referência ao cv::Mat interno; dados pertencem ao shared_ptr cv_ptr.
 
     std::lock_guard<std::mutex> lock(image_mutex_);
-    images_rgb_[topic] = rgb.clone();                  // clone para sobreviver ao shared_ptr
+    // Adquire mutex antes de modificar images_rgb_
+    images_rgb_[topic] = rgb.clone();
+    // clone(): cria cópia independente dos pixels.
+    // NECESSÁRIO: sem clone(), ao destruir cv_ptr os pixels seriam liberados
+    // e images_rgb_[topic] apontaria para memória inválida.
+
   } catch (const std::exception &e) {
     RCLCPP_ERROR(get_logger(), "cv_bridge error on %s: %s", topic.c_str(), e.what());
+    // Captura exceções de encoding inválido sem derrubar o nó.
   }
 }
 ```
 
-**O que este bloco faz:**
-
-- `toCvShare` (não `toCvCopy`) evita uma cópia desnecessária — apenas cria um
-  wrapper. O `.clone()` posterior é necessário para desacoplar o dado do
-  `shared_ptr` da mensagem ROS 2.
-- `"rgb8"` — força conversão para RGB. A conversão para BGR (exigida pelo OpenCV)
-  acontece em `createCanvasBGR`.
-
-### Bloco 5 — `createCanvasBGR()` — montagem do painel
+### 1.5 `createCanvasBGR()` — montagem do painel
 
 ```cpp
 cv::Mat createCanvasBGR(const std::map<std::string, cv::Mat> &images_rgb) {
-  cv::Mat canvas(window_height_, window_width_, CV_8UC3, cv::Scalar(0,0,0));
+  cv::Mat canvas(window_height_, window_width_, CV_8UC3, cv::Scalar(0, 0, 0));
+  // Canvas de fundo preto; CV_8UC3 = 8 bits unsigned, 3 canais (BGR).
 
-  struct Slot { std::string topic; std::string label; };
-  const std::vector<Slot> slots = {
-      {"/uav1/rgbd_front/color/image_raw", "rgbd_front"},
-      {"/uav1/rgbd_down/color/image_raw",  "rgbd_down"},
-  };
-
-  const int cols   = 2,   rows   = 1;
-  const int cell_w = window_width_ / cols;
-  const int cell_h = window_height_ / rows;
+  const int cols   = 2;
+  const int rows   = 1;
+  const int cell_w = window_width_ / cols;   // ex.: 1600/2 = 800 px por painel
+  const int cell_h = window_height_ / rows;  // ex.: 900 px de altura
 
   for (int i = 0; i < (int)slots.size(); ++i) {
-    int x0 = (i % cols) * cell_w;
-    int y0 = (i / cols) * cell_h;
+    int col = i % cols;           // 0 (esquerda) ou 1 (direita)
+    int row = i / cols;           // sempre 0 (1 linha)
+    int x0  = col * cell_w;      // x0=0 para slot 0, x0=800 para slot 1
+    int y0  = row * cell_h;      // y0=0 para ambos
 
     auto it = images_rgb.find(slots[i].topic);
     if (it == images_rgb.end() || it->second.empty()) {
-      cv::putText(canvas, "waiting: " + slots[i].label, cv::Point(x0+20, y0+40),
-                  cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0,0,255), 2);
+      cv::putText(canvas, ("waiting: " + slots[i].label),
+                  cv::Point(x0 + 20, y0 + 40),
+                  cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 2);
+      // Texto vermelho (BGR: 0,0,255) quando câmera ainda não recebeu imagem
       continue;
     }
 
-    cv::Mat resized_rgb, resized_bgr;
+    cv::Mat resized_rgb;
     cv::resize(it->second, resized_rgb, cv::Size(cell_w, cell_h));
-    cv::cvtColor(resized_rgb, resized_bgr, cv::COLOR_RGB2BGR);   // ROS → OpenCV
-    resized_bgr.copyTo(canvas(cv::Rect(x0, y0, cell_w, cell_h)));
+    // Redimensiona a imagem para o tamanho da célula do painel.
 
-    cv::putText(canvas, slots[i].label, cv::Point(x0+20, y0+40),
-                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0,255,0), 2);
+    cv::Mat resized_bgr;
+    cv::cvtColor(resized_rgb, resized_bgr, cv::COLOR_RGB2BGR);
+    // Converte RGB (formato ROS 2) → BGR (formato OpenCV imshow).
+
+    resized_bgr.copyTo(canvas(cv::Rect(x0, y0, cell_w, cell_h)));
+    // Copia a imagem convertida para a célula correta do canvas.
+    // cv::Rect(x0, y0, cell_w, cell_h): região de interesse (ROI).
+
+    cv::putText(canvas, slots[i].label,
+                cv::Point(x0 + 20, y0 + 40),
+                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
+    // Label verde (BGR: 0,255,0) sobre cada painel.
   }
 
-  // linha separadora vertical entre os dois painéis
   cv::line(canvas, cv::Point(cell_w, 0), cv::Point(cell_w, window_height_),
-           cv::Scalar(200,200,200), 2);
+           cv::Scalar(200, 200, 200), 2);
+  // Linha cinza separando os dois painéis verticalmente.
+
   return canvas;
 }
-```
-
-**O que este bloco faz:**
-
-- Cria um canvas de fundo preto e divide em `cols×rows` células de tamanho igual.
-- Para cada slot, exibe "waiting: ..." em vermelho se a imagem ainda não chegou —
-  evita tela em branco no início.
-- `cvtColor(RGB→BGR)` é necessária porque ROS 2 publica em RGB e o `imshow`
-  do OpenCV espera BGR.
-
-### Como executar
-
-```bash
-ros2 run drone_control camera_viewer
-ros2 run drone_control camera_viewer --ros-args -p window_width:=1920 -p window_height:=1080
 ```
 
 ---
 
 ## 2. `takeoff.cpp`
 
-### Papel / Responsabilidade
-
-Nó de decolagem que publica um waypoint de altitude-alvo em `/waypoints` e
-monitora a odometria até confirmar que o drone atingiu a altitude mínima
-(`altitude_threshold`). Implementa retry automático em caso de falha.
-
-### Bloco 1 — FSM e construtor
+### 2.1 Enum da FSM
 
 ```cpp
 enum class TakeoffFSM { WAIT_FCU, PUBLISH_TAKEOFF, MONITOR };
+// WAIT_FCU       : aguarda mavros_msgs/State com connected=true
+// PUBLISH_TAKEOFF: aguarda odometria (se use_current_xy=true) e publica waypoint
+// MONITOR        : verifica altitude; retenta até max_attempts ou shutdown
+```
 
-TakeoffNode() : Node("takeoff"), fsm_(TakeoffFSM::WAIT_FCU), ... {
-  // Parâmetros
+### 2.2 Construtor
+
+```cpp
+TakeoffNode() : Node("takeoff"),
+                fsm_(TakeoffFSM::WAIT_FCU),
+                attempt_start_(rclcpp::Time(0, 0, RCL_ROS_TIME))
+{
+  this->declare_parameter<std::string>("uav_name", "uav1");
+  // uav_name: prefixo dos tópicos MAVROS (ex.: "/uav1/mavros/state")
+
   this->declare_parameter<double>("takeoff_altitude", 1.75);
-  this->declare_parameter<double>("altitude_threshold", -1.0);  // <0 → auto
-  this->declare_parameter<bool>  ("use_current_xy",    true);
-  this->declare_parameter<int>   ("max_attempts",      3);
-  // ...
+  // Altitude-alvo em metros (ENU)
+
+  this->declare_parameter<double>("altitude_threshold", -1.0);
+  // Limiar de confirmação. Valor < 0 → auto: max(altitude - 0.3, 0.2)
+
+  this->declare_parameter<bool>("use_current_xy", true);
+  // true: waypoint usa X/Y da odometria atual → decolagem vertical
+  // false: waypoint usa parâmetros x e y
+
+  this->declare_parameter<double>("x", 0.0);          // X quando use_current_xy=false
+  this->declare_parameter<double>("y", 0.0);          // Y quando use_current_xy=false
+  this->declare_parameter<std::string>("frame_id", "map");   // frame do waypoint
+  this->declare_parameter<double>("check_after_sec", 10.0);  // timeout por tentativa (s)
+  this->declare_parameter<int>("max_attempts", 3);           // máximo de retentativas
+  this->declare_parameter<double>("rate_hz", 10.0);          // frequência da FSM (Hz)
+
+  // Leitura dos parâmetros (podem ter sido sobrescritos por --ros-args)
+  uav_name_        = this->get_parameter("uav_name").as_string();
+  takeoff_alt_     = this->get_parameter("takeoff_altitude").as_double();
+  altitude_thresh_ = this->get_parameter("altitude_threshold").as_double();
+  use_current_xy_  = this->get_parameter("use_current_xy").as_bool();
+  fallback_x_      = this->get_parameter("x").as_double();
+  fallback_y_      = this->get_parameter("y").as_double();
+  frame_id_        = this->get_parameter("frame_id").as_string();
+  check_after_sec_ = this->get_parameter("check_after_sec").as_double();
+  max_attempts_    = this->get_parameter("max_attempts").as_int();
+  double rate_hz   = this->get_parameter("rate_hz").as_double();
 
   if (altitude_thresh_ < 0.0) {
-    altitude_thresh_ = std::max(takeoff_alt_ - 0.3, 0.2);  // auto threshold
+    altitude_thresh_ = std::max(takeoff_alt_ - 0.3, 0.2);
+    // Cálculo automático: 30 cm abaixo do alvo, com piso em 0.2 m.
+    // "Decolagem confirmada" não precisa atingir exatamente a altitude-alvo.
   }
 
   waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/waypoints", 10);
-  // ...
+  // /waypoints: consumido pelo my_drone_controller
+
+  state_sub_ = this->create_subscription<mavros_msgs::msg::State>(
+    "/" + uav_name_ + "/mavros/state", 10,
+    std::bind(&TakeoffNode::stateCallback, this, _1));
+  // Assina /uav1/mavros/state para detectar quando o FCU está conectado
+
+  odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+    "/" + uav_name_ + "/mavros/local_position/odom", 10,
+    std::bind(&TakeoffNode::odomCallback, this, _1));
+  // Assina odometria para leitura de posição atual (x, y, z)
+
+  auto period_ms = std::chrono::milliseconds(static_cast<int>(1000.0 / rate_hz));
+  timer_ = this->create_wall_timer(period_ms, std::bind(&TakeoffNode::timerCallback, this));
+  // Timer que chama timerCallback() na frequência rate_hz (padrão 10 Hz)
 }
 ```
 
-**O que este bloco faz:**
-
-- `altitude_threshold < 0` → threshold calculado automaticamente como
-  `takeoff_altitude - 0.3 m` (com piso em 0.2 m). Isso evita exigir que o
-  controlador atinja exatamente a altitude configurada — uma margem de 30 cm
-  é suficiente para confirmar decolagem bem-sucedida.
-
-### Bloco 2 — `timerCallback()` — dispatcher FSM
+### 2.3 Callbacks de dados
 
 ```cpp
-void timerCallback() {
+void stateCallback(const mavros_msgs::msg::State::SharedPtr msg)
+{
+  fcu_connected_ = msg->connected;
+  // msg->connected = true quando MAVROS tem comunicação com o FCU.
+  // Ativado pelo TAKING_OFF da FSM quando FCU responde ao heartbeat.
+}
+
+void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+  current_z_     = msg->pose.pose.position.z;   // altitude atual (ENU, m)
+  odom_x_        = msg->pose.pose.position.x;   // posição X atual
+  odom_y_        = msg->pose.pose.position.y;   // posição Y atual
+  odom_received_ = true;   // flag: já recebemos pelo menos uma leitura
+}
+```
+
+### 2.4 `timerCallback()` — dispatcher da FSM
+
+```cpp
+void timerCallback()
+{
   switch (fsm_) {
+
     case TakeoffFSM::WAIT_FCU:
       if (!fcu_connected_) {
-        RCLCPP_INFO_THROTTLE(..., "Waiting for FCU connection…");
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+          "Waiting for FCU connection…");
+        // Throttle a cada 3 s para não poluir o terminal
         return;
       }
+      RCLCPP_INFO(this->get_logger(), "FCU connected.");
       fsm_ = TakeoffFSM::PUBLISH_TAKEOFF;
+      // Transição: FCU pronto → preparar para publicar waypoint
       break;
 
     case TakeoffFSM::PUBLISH_TAKEOFF:
       if (use_current_xy_ && !odom_received_) {
-        RCLCPP_INFO_THROTTLE(..., "Waiting for odometry…");
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+          "Waiting for odometry…");
+        // Se use_current_xy=true e ainda sem odometria, aguarda.
+        // Sem esta guarda, o waypoint seria publicado em (0,0,alt).
         return;
       }
-      publishTakeoffWaypoint();
-      attempt_start_ = this->now();
-      fsm_ = TakeoffFSM::MONITOR;
+      publishTakeoffWaypoint();       // publica o waypoint de decolagem
+      attempt_start_ = this->now();   // registra início desta tentativa
+      fsm_ = TakeoffFSM::MONITOR;     // transição para monitoramento
       break;
 
     case TakeoffFSM::MONITOR:
-      monitorAltitude();
+      monitorAltitude();   // verifica altitude; pode retentar ou encerrar
       break;
   }
 }
 ```
 
-**O que este bloco faz:**
-
-- **WAIT_FCU** — bloqueia até receber `mavros_msgs/State` com `connected=true`.
-  Garante que o FCU está pronto antes de publicar qualquer waypoint.
-- **PUBLISH_TAKEOFF** — aguarda odometria se `use_current_xy=true` (para não
-  publicar waypoint em (0,0,alt) se a posição inicial for desconhecida).
-- **MONITOR** — verifica periodicamente se a altitude foi atingida.
-
-### Bloco 3 — `publishTakeoffWaypoint()` — publicação do waypoint
+### 2.5 `publishTakeoffWaypoint()`
 
 ```cpp
-void publishTakeoffWaypoint() {
+void publishTakeoffWaypoint()
+{
   geometry_msgs::msg::PoseArray waypoints;
-  waypoints.header.frame_id = frame_id_;
-  waypoints.header.stamp    = this->now();
+  waypoints.header.frame_id = frame_id_;       // "map"
+  waypoints.header.stamp    = this->now();     // timestamp atual
 
   geometry_msgs::msg::Pose pose;
   pose.position.x = use_current_xy_ ? odom_x_ : fallback_x_;
+  // use_current_xy_=true: decolagem vertical sobre posição atual
+  // use_current_xy_=false: decolagem para coordenadas fixas
   pose.position.y = use_current_xy_ ? odom_y_ : fallback_y_;
-  pose.position.z = takeoff_alt_;
-  pose.orientation.w = 1.0;  // quaternion identidade
+  pose.position.z    = takeoff_alt_;   // altitude-alvo (ex.: 1.75 m)
+  pose.orientation.w = 1.0;            // quaternion identidade (sem rotação)
 
-  waypoints.poses.push_back(pose);
-  waypoints_pub_->publish(waypoints);
+  waypoints.poses.push_back(pose);     // array com um único waypoint
+  waypoints_pub_->publish(waypoints);  // envia ao my_drone_controller
 }
 ```
 
-**O que este bloco faz:**
-
-- `PoseArray` com um único `Pose` — o `my_drone_controller` interpreta isso
-  como "ir para este ponto e manter hover".
-- `use_current_xy_=true` (padrão) — garante que o drone sobe verticalmente
-  sobre a posição atual, sem desviar lateralmente durante a decolagem.
-
-### Bloco 4 — `monitorAltitude()` — confirmação e retry
+### 2.6 `monitorAltitude()`
 
 ```cpp
-void monitorAltitude() {
-  // Sucesso: altitude atingida
+void monitorAltitude()
+{
   if (current_z_ >= altitude_thresh_) {
-    RCLCPP_INFO(this->get_logger(), "Takeoff successful: z=%.2f m >= %.2f m.", ...);
-    rclcpp::shutdown();
+    // Altitude atingida → decolagem bem-sucedida
+    RCLCPP_INFO(this->get_logger(),
+      "Takeoff successful: z=%.2f m >= %.2f m.", current_z_, altitude_thresh_);
+    rclcpp::shutdown();   // encerra o nó; exit code 0
     return;
   }
 
-  // Timeout: verificar se deve retentar
   double elapsed = (this->now() - attempt_start_).seconds();
+  // Tempo desde o início desta tentativa
+
   if (elapsed >= check_after_sec_) {
     attempt_count_++;
+    // Incrementa e verifica se esgotou as tentativas
+
     if (attempt_count_ >= max_attempts_) {
-      RCLCPP_ERROR(this->get_logger(), "Takeoff failed after %d attempt(s).", max_attempts_);
-      rclcpp::shutdown();
+      RCLCPP_ERROR(this->get_logger(),
+        "Takeoff failed after %d attempt(s): z=%.2f m.", max_attempts_, current_z_);
+      rclcpp::shutdown();   // falha; exit code retornado via main()
       return;
     }
-    RCLCPP_WARN(this->get_logger(), "Altitude not reached after %.1fs. Retrying…", check_after_sec_);
-    fsm_ = TakeoffFSM::PUBLISH_TAKEOFF;  // republica waypoint
+
+    RCLCPP_WARN(this->get_logger(),
+      "Altitude not reached after %.1fs. Retrying (attempt %d/%d)…",
+      check_after_sec_, attempt_count_ + 1, max_attempts_);
+    fsm_ = TakeoffFSM::PUBLISH_TAKEOFF;
+    // Volta para PUBLISH_TAKEOFF: republica o waypoint e reinicia o timer
   }
 }
-```
-
-**O que este bloco faz:**
-
-- Compara `current_z_` (da odometria) com `altitude_thresh_`.
-- Se `check_after_sec_` (padrão 10 s) passou sem sucesso → incrementa
-  `attempt_count_` e volta para `PUBLISH_TAKEOFF` (republica o waypoint).
-- Após `max_attempts_` (padrão 3) falhas → shutdown com log de erro.
-
-### Exemplo de uso
-
-```bash
-# Decolagem padrão a 1.75 m
-ros2 run drone_control takeoff
-
-# Decolagem a 2.5 m em coordenadas fixas
-ros2 run drone_control takeoff --ros-args \
-  -p takeoff_altitude:=2.5 \
-  -p use_current_xy:=false \
-  -p x:=1.0 -p y:=0.0
 ```
 
 ---
 
 ## 3. `pouso.cpp`
 
-### Papel / Responsabilidade
-
-Nó de pouso de precisão com FSM de cinco estados que implementa uma estratégia
-de duas fases (CENTER → DESCEND) para evitar oscilação de posição XY durante
-a descida. Suporta detecção de marcador H via YOLO para pouso autônomo.
-
-### Bloco 1 — FSM e struct HDetection
+### 3.1 Enum e struct
 
 ```cpp
 enum class PousoFSM { WAIT_FCU, WAIT_ODOM, COLLECT_H, CENTER, DESCEND };
+// WAIT_FCU  : aguarda connected=true no /mavros/state
+// WAIT_ODOM : aguarda primeira odometria
+// COLLECT_H : janela de coleta de detecções YOLO (se use_yolo_h=true)
+// CENTER    : hover sobre alvo XY em approach_z até estabilizar
+// DESCEND   : desce para landing_z; aborta em deriva excessiva
 
 struct HDetection {
-  rclcpp::Time stamp;
-  double right {0.0};   // deslocamento lateral para a direita (m)
-  double front {0.0};   // deslocamento para frente (m)
-  double range {0.0};   // distância total = hypot(right, front)
+  rclcpp::Time stamp;   // timestamp para expiração da detecção
+  double right {0.0};   // deslocamento lateral direito no frame da câmera (m)
+  double front {0.0};   // deslocamento frontal no frame da câmera (m)
+  double range {0.0};   // = hypot(right, front): distância total ao marcador
 };
 ```
 
-**O que este bloco faz:**
-
-- `WAIT_FCU/WAIT_ODOM` — fases de inicialização aguardando sensores.
-- `COLLECT_H` — janela de coleta de detecções YOLO antes de calcular o alvo.
-- `CENTER` — centralização sobre o alvo XY na altitude de aproximação.
-- `DESCEND` — descida para `landing_z` com guard de deriva.
-- `HDetection` — snapshot de uma detecção YOLO com timestamp para expiração.
-
-### Bloco 2 — `startLanding()` — cálculo do alvo e entrada em CENTER
+### 3.2 `hCallback()` — recepção de detecções YOLO
 
 ```cpp
-void startLanding() {
-  computeLandingTarget();   // calcula active_land_x_, active_land_y_
+void hCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg)
+{
+  double right = msg->point.x;   // ponto.x = componente "direita" no frame câmera
+  double front = msg->point.y;   // ponto.y = componente "frente" no frame câmera
+  double range = std::hypot(right, front);   // distância total ao marcador
 
-  // Determinar altitude de aproximação
-  approach_z_ = (approach_z_param_ >= 0.0) ? approach_z_param_ : current_z_;
-  if (approach_z_ > max_approach_z_) approach_z_ = max_approach_z_;
+  if (range > max_h_range_m_) {
+    return;   // detecção muito distante → ruído; descartada
+  }
 
-  callAutoLand();     // envia set_mode AUTO.LAND ao FCU
-  attempt_start_ = this->now();
-  enterCenter();
+  if (fsm_ == PousoFSM::COLLECT_H) {
+    h_collect_count_++;
+    if (!has_best_h_ || range < best_collected_h_.range) {
+      best_collected_h_ = {this->now(), right, front, range};
+      has_best_h_ = true;
+      // Guarda a detecção mais próxima (menor range) da janela de coleta.
+      // Estratégia prefer_closest_h=true (padrão): usa o marcador de menor distância.
+    }
+  }
+
+  h_detections_.push_back({this->now(), right, front, range});
+  // Adiciona ao buffer geral (sliding window)
+
+  rclcpp::Time now = this->now();
+  h_detections_.erase(
+    std::remove_if(h_detections_.begin(), h_detections_.end(),
+      [&](const HDetection & d) {
+        return (now - d.stamp).seconds() > h_timeout_s_;
+        // Remove detecções mais antigas que h_timeout_s_ (janela deslizante)
+      }),
+    h_detections_.end());
+  // Padrão erase-remove: eficiente para vectors; remove_if marca, erase elimina.
 }
+```
 
-void computeLandingTarget() {
+### 3.3 `computeLandingTarget()` — cálculo do alvo de pouso
+
+```cpp
+void computeLandingTarget()
+{
   if (use_yolo_h_ && has_best_h_) {
-    // Converter coordenadas câmera (right, front) para mapa (x, y) usando yaw atual
-    double dx = std::cos(current_yaw_) * best_collected_h_.front
-               + std::sin(current_yaw_) * best_collected_h_.right;
-    double dy = std::sin(current_yaw_) * best_collected_h_.front
-               - std::cos(current_yaw_) * best_collected_h_.right;
-    active_land_x_ = current_x_ + dx;
+    double yaw = current_yaw_;
+    // Transformação: frame câmera (right, front) → frame map (dx, dy)
+    // usando a rotação do drone (yaw atual)
+    double dx = std::cos(yaw) * best_collected_h_.front
+               + std::sin(yaw) * best_collected_h_.right;
+    // cos(yaw)*front: projeção "frente" no eixo X do mapa
+    // sin(yaw)*right: projeção "direita" no eixo X do mapa
+    double dy = std::sin(yaw) * best_collected_h_.front
+               - std::cos(yaw) * best_collected_h_.right;
+    // sin(yaw)*front: projeção "frente" no eixo Y do mapa
+    // -cos(yaw)*right: sinal negativo pela convenção da rotação ENU
+    active_land_x_ = current_x_ + dx;   // alvo absoluto = posição atual + offset
     active_land_y_ = current_y_ + dy;
   } else {
     active_land_x_ = use_current_xy_ ? current_x_ : target_x_;
     active_land_y_ = use_current_xy_ ? current_y_ : target_y_;
+    // Fallback: usa posição atual da odometria ou parâmetros x/y fixos
   }
 }
 ```
 
-**O que este bloco faz:**
-
-- `computeLandingTarget` realiza a transformação de referencial da detecção YOLO:
-  converte `(right, front)` em `(dx, dy)` no frame `map` usando `current_yaw_`.
-  Isso é necessário porque o marcador H é detectado no frame da câmera (body-relative).
-- `approach_z_param_ < 0` → usa a altitude atual como ponto de aproximação
-  (a drone hover onde está, depois desce). Isso evita subir/descer antes de centralizar.
-- `callAutoLand()` envia o modo `AUTO.LAND` ao FCU como confirmação extra —
-  o nó de pouso é o mecanismo principal, mas o FCU como fallback.
-
-### Bloco 3 — `runCenter()` — fase de centralização
+### 3.4 `enterCenter()` e `runCenter()`
 
 ```cpp
-void runCenter() {
+void enterCenter()
+{
+  in_center_stable_    = false;
+  // Reseta flag: a estabilidade deve ser confirmada do zero nesta entrada.
+  center_stable_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  // Reseta timer de estabilidade (valor inválido até in_center_stable_ = true).
+  publishCenterWaypoint();
+  // Publica waypoint de hover em approach_z sobre active_land_x_/y_.
+  fsm_ = PousoFSM::CENTER;
+}
+
+void runCenter()
+{
   double dxy = std::hypot(current_x_ - active_land_x_, current_y_ - active_land_y_);
+  // dxy: distância planar atual→alvo XY
 
   if (dxy <= xy_hold_tol_) {
     if (!in_center_stable_) {
       in_center_stable_    = true;
       center_stable_since_ = this->now();
+      // Primeira vez dentro da tolerância: inicia contagem de estabilidade.
     }
     double stable_dur = (this->now() - center_stable_since_).seconds();
     if (stable_dur >= xy_hold_stable_s_) {
-      RCLCPP_INFO(this->get_logger(),
-        "✅ Centrado: dxy=%.3f m por %.1fs. Iniciando descida.", dxy, stable_dur);
+      // Estável por tempo suficiente → iniciar descida
       publishDescentWaypoint();
+      // Publica waypoint em landing_z (altitude de solo).
       fsm_ = PousoFSM::DESCEND;
       return;
     }
+    // Ainda dentro da tolerância mas tempo insuficiente: aguarda mais
   } else {
-    in_center_stable_ = false;   // reset se saiu da tolerância
+    in_center_stable_ = false;
+    // Saiu da tolerância XY: reseta timer de estabilidade.
+    // Na próxima vez que entrar, o contador recomeça do zero.
+  }
+
+  double elapsed = (this->now() - attempt_start_).seconds();
+  if (elapsed >= check_after_sec_) {
+    // Timeout global de CENTER: não conseguiu centralizar
+    RCLCPP_WARN(this->get_logger(),
+      "⚠️  Timeout em CENTER (%.1fs): dxy=%.3f m.", check_after_sec_, dxy);
+    rclcpp::shutdown();
   }
 }
 ```
 
-**O que este bloco faz:**
-
-- `xy_hold_tol_` (padrão 0.10 m) — o drone deve estar dentro deste raio do alvo.
-- `xy_hold_stable_s_` (padrão 1.0 s) — deve permanecer dentro por este tempo
-  **continuamente** antes de iniciar a descida. Isso previne que uma passagem
-  transiente pelo alvo dispare a descida precocemente.
-- `in_center_stable_` é resetado quando o drone sai da tolerância — o timer
-  de estabilidade recomeça do zero.
-
-### Bloco 4 — `runDescend()` — fase de descida
+### 3.5 `runDescend()`
 
 ```cpp
-void runDescend() {
+void runDescend()
+{
   double dxy  = std::hypot(current_x_ - active_land_x_, current_y_ - active_land_y_);
-  bool   z_ok = (current_z_ <= landing_z_ + 0.15);
+  bool   z_ok  = (current_z_ <= landing_z_ + 0.15);
+  // z_ok: chegou a 15 cm acima de landing_z (margem para suavidade)
   bool   xy_ok = (dxy <= xy_hold_tol_);
 
   if (z_ok && xy_ok) {
+    // Pouso confirmado
     RCLCPP_INFO(this->get_logger(), "✅ Pouso concluído.");
-    rclcpp::shutdown();
+    rclcpp::shutdown();   // exit code 0 → sucesso
     return;
   }
 
-  // Abort por deriva excessiva → voltar para CENTER
   if (dxy > xy_abort_tol_) {
+    // Deriva excessiva durante descida → abortar e voltar a CENTER
     RCLCPP_WARN(this->get_logger(),
-      "⚠️  Deriva excessiva durante descida: dxy=%.3f m > %.3f m. Voltando a CENTER.",
+      "⚠️  Deriva excessiva: dxy=%.3f m > %.3f m. Voltando a CENTER.",
       dxy, xy_abort_tol_);
-    enterCenter();    // republica waypoint de hover e sobe para approach_z
+    enterCenter();
+    // enterCenter republica waypoint de hover em approach_z:
+    // o drone sobe e recentraliza antes de tentar descer novamente.
     return;
+  }
+
+  // Sem abort, sem conclusão: descida em andamento.
+  // NÃO republicamos o waypoint de descida a cada tick (intencional):
+  // republicar causaria reset da trajetória com jitter de XY pequeno.
+
+  double elapsed = (this->now() - attempt_start_).seconds();
+  if (elapsed >= check_after_sec_) {
+    RCLCPP_WARN(this->get_logger(),
+      "⚠️  Timeout aguardando pouso: Z=%.2f m.", current_z_);
+    rclcpp::shutdown();
   }
 }
 ```
-
-**O que este bloco faz:**
-
-- O waypoint de descida é publicado **apenas uma vez** ao entrar em DESCEND
-  (não é republicado a cada tick). Isso evita que o controlador reinicie a
-  trajetória de descida cada vez que a posição XY flutua levemente.
-- `xy_abort_tol_` (padrão 0.5 m) — limiar mais amplo que `xy_hold_tol_`.
-  Somente deriva > 50 cm aborta a descida. Pequenas oscilações são toleradas.
-- Ao abortar: `enterCenter()` publica um waypoint de hover na `approach_z_`,
-  fazendo o drone subir antes de tentar centralizar novamente.
 
 ---
 
 ## 4. `drone_yaw_360.cpp`
 
-### Papel / Responsabilidade
-
-Nó que comanda o drone a realizar um giro angular acumulado (padrão: 2π rad = 360°)
-usando o mecanismo de `YawOverride` do `my_drone_controller`. Acumula a rotação
-via delta de yaw da odometria e desativa o override ao atingir o ângulo alvo.
-
-### Bloco 1 — Construtor e parâmetros
+### 4.1 Construtor
 
 ```cpp
 DroneYaw360OverrideAngle() : Node("drone_yaw_360") {
-  this->declare_parameter<std::string>("uav_ns",          "/uav1");
-  this->declare_parameter<double>     ("yaw_rate",        1.0);       // rad/s
-  this->declare_parameter<double>     ("yaw_tolerance",   0.05);      // rad
-  this->declare_parameter<double>     ("yaw_target_delta", 2*M_PI);  // rad
+  this->declare_parameter<std::string>("uav_ns", "/uav1");
+  // Namespace do UAV para construção dos tópicos
+
+  this->declare_parameter<double>("yaw_rate", 1.0);
+  // Velocidade de giro em rad/s (sempre usado como |valor| internamente)
+
+  this->declare_parameter<double>("yaw_tolerance", 0.05);
+  // Margem em rad para considerar giro completo.
+  // Sem margem, variações de float impediriam a conclusão exata.
+
+  this->declare_parameter<double>("yaw_target_delta", 2*M_PI);
+  // Ângulo total a girar. Positivo = CCW, negativo = CW.
+  // Padrão = 2π = 360°.
+
+  uav_ns_           = this->get_parameter("uav_ns").as_string();
+  yaw_rate_         = this->get_parameter("yaw_rate").as_double();
+  yaw_tolerance_    = this->get_parameter("yaw_tolerance").as_double();
+  yaw_target_delta_ = this->get_parameter("yaw_target_delta").as_double();
 
   pub_ = this->create_publisher<drone_control::msg::YawOverride>(
     uav_ns_ + "/yaw_override/cmd", 10);
+  // Publica em /uav1/yaw_override/cmd
 
   odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-    uav_ns_ + "/mavros/local_position/odom", 10, ...);
+    uav_ns_ + "/mavros/local_position/odom", 10,
+    std::bind(&DroneYaw360OverrideAngle::odom_cb, this, std::placeholders::_1));
+  // Assina odometria para extrair yaw atual
 
-  timer_ = this->create_wall_timer(50ms, ...);  // 20 Hz
+  timer_ = this->create_wall_timer(50ms,
+    std::bind(&DroneYaw360OverrideAngle::timer_cb, this));
+  // 50 ms = 20 Hz: boa resolução para acumular delta de yaw
 }
 ```
 
-**O que este bloco faz:**
-
-- `yaw_target_delta = 2π` (positivo) → giro CCW; negativo → CW.
-- Timer a 20 Hz — suficiente para acumular delta de yaw com boa resolução
-  sem sobrecarregar a CPU.
-
-### Bloco 2 — `odom_cb()` — extração do yaw via Eigen
+### 4.2 `odom_cb()` — extração de yaw via Eigen
 
 ```cpp
-void odom_cb(const nav_msgs::msg::Odometry::SharedPtr msg) {
+void odom_cb(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
   Eigen::Quaterniond q(
-    msg->pose.pose.orientation.w,
-    msg->pose.pose.orientation.x,
-    msg->pose.pose.orientation.y,
-    msg->pose.pose.orientation.z
+    msg->pose.pose.orientation.w,   // w: componente escalar
+    msg->pose.pose.orientation.x,   // x: componente i
+    msg->pose.pose.orientation.y,   // y: componente j
+    msg->pose.pose.orientation.z    // z: componente k
   );
-  auto euler = q.toRotationMatrix().eulerAngles(0, 1, 2);  // ZYX = roll, pitch, yaw
-  current_yaw_ = euler[2];  // índice 2 = yaw em ZYX
+  // Construtor Eigen: (w, x, y, z) — atenção: ordem diferente do ROS (x,y,z,w)
+
+  auto euler = q.toRotationMatrix().eulerAngles(0, 1, 2);
+  // toRotationMatrix(): quaternion → matriz de rotação 3x3
+  // eulerAngles(0, 1, 2): decompõe em ângulos intrínsecos ZYX:
+  //   euler[0] = roll  (rotação em torno de X)
+  //   euler[1] = pitch (rotação em torno de Y)
+  //   euler[2] = yaw   (rotação em torno de Z) ← o que queremos
+
+  current_yaw_ = euler[2];   // extrai o yaw
 
   if (!odom_ok_) {
     last_yaw_ = current_yaw_;
-    odom_ok_  = true;
+    // Inicializa last_yaw_ APENAS na primeira odometria.
+    // Razão: se inicializasse no construtor com last_yaw_=0, o primeiro delta
+    // seria current_yaw_ - 0 ≠ 0 → acumulação espúria no início.
+    odom_ok_ = true;
   }
 }
 ```
 
-**O que este bloco faz:**
-
-- `eulerAngles(0, 1, 2)` usa a convenção intrínseca ZYX do Eigen.
-  O índice `[2]` é o yaw no referencial ENU.
-- `last_yaw_` é inicializado apenas na primeira odometria recebida, não no
-  construtor — garante que o delta inicial seja zero.
-
-### Bloco 3 — `timer_cb()` — acumulação de rotação
+### 4.3 `timer_cb()` — acumulação e controle
 
 ```cpp
-void timer_cb() {
-  if (!odom_ok_) return;
+void timer_cb()
+{
+  if (!odom_ok_) return;   // sem odometria: aguarda
 
   if (!started_) {
-    yaw_initial_    = current_yaw_;
-    accumulated_yaw_ = 0.0;
+    yaw_initial_     = current_yaw_;   // yaw de referência inicial (para logs)
+    last_yaw_        = current_yaw_;   // base para o primeiro delta
+    accumulated_yaw_ = 0.0;            // contador de ângulo girado
     started_ = true;
-    publish_enable();
+    publish_enable();   // ativa YawOverride no my_drone_controller
     return;
   }
 
   double delta = normalize_angle(current_yaw_ - last_yaw_);
-  double dir   = (yaw_target_delta_ >= 0.0) ? 1.0 : -1.0;
-  if (delta * dir < 0) delta = 0;   // descarta retrocesso por ruído
+  // delta: variação de yaw entre ticks, normalizada para [-π, π].
+  // Normalização evita salto de ≈-2π quando yaw passa por ±π (wrap-around).
+
+  double dir = (yaw_target_delta_ >= 0.0) ? 1.0 : -1.0;
+  // dir: direção esperada do giro (+1 CCW, -1 CW)
+
+  if (delta * dir < 0) delta = 0;
+  // Se delta e dir têm sinais opostos: drone girou "para trás".
+  // Descartamos: ruído do IMU ou oscilação momentânea.
+  // Nunca subtraímos do acumulado: só contamos o progresso, não o retrocesso.
 
   accumulated_yaw_ += std::abs(delta);
-  last_yaw_ = current_yaw_;
+  // Soma o módulo do delta (sempre positivo) ao acumulado.
 
-  if (accumulated_yaw_ >= std::abs(yaw_target_delta_) - yaw_tolerance_ && !already_disabled_) {
-    publish_disable();
+  last_yaw_ = current_yaw_;   // atualiza base para o próximo delta
+
+  if (accumulated_yaw_ >= std::abs(yaw_target_delta_) - yaw_tolerance_
+      && !already_disabled_) {
+    // accumulated ≥ alvo - tolerância: giro concluído
+    publish_disable();   // desativa YawOverride e chama rclcpp::shutdown()
   }
 }
 ```
 
-**O que este bloco faz:**
+### 4.4 `normalize_angle()`
 
-- `normalize_angle` garante que o delta está em `[-π, π]`, evitando falsos
-  grandes deltas quando o yaw passa por ±π (wrap-around).
-- O guard `delta * dir < 0` descarta deltas no sentido oposto ao giro
-  comandado — previne que ruído de medição ou oscilação momentânea diminua
-  `accumulated_yaw_`.
-- `accumulated_yaw_ += std::abs(delta)` — soma o valor absoluto do delta no
-  sentido correto, permitindo que o ângulo acumulado seja comparado com
-  `|yaw_target_delta_| - yaw_tolerance_`.
+```cpp
+double normalize_angle(double a)
+{
+  while (a > M_PI)  a -= 2 * M_PI;
+  // Se a > π: subtrai 2π; ex.: 3.5 → 3.5 - 2π ≈ -2.78 rad
+  while (a < -M_PI) a += 2 * M_PI;
+  // Se a < -π: adiciona 2π; ex.: -3.5 → -3.5 + 2π ≈ 2.78 rad
+  return a;
+  // Mantém o ângulo em [-π, π].
+  // Caso de uso crítico: ao cruzar ±π, a diferença "crua" seria ≈ 2π
+  // mas a rotação real foi mínima.
+}
+```
 
 ---
 
 ## 5. `missao_P_T.cpp`
 
-### Papel / Responsabilidade
-
-Nó orquestrador que executa a sequência **Pouso → espera 10 s → Takeoff** como
-subprocessos independentes via `fork()`/`execlp()`. Cada fase corre em um
-processo filho separado, com isolamento completo de contexto ROS 2.
-
-### Bloco 1 — Construtor e agendamento
+### 5.1 Includes
 
 ```cpp
-MissaoPTNode() : Node("missao_P_T"), stop_requested_(false), exit_code_(0) {
+#include <rclcpp/rclcpp.hpp>    // Node, timer, logger
+#include <sys/types.h>          // pid_t
+#include <sys/wait.h>           // waitpid, WIFEXITED, WEXITSTATUS
+#include <unistd.h>             // fork, execlp, _exit
+#include <thread>               // std::thread
+#include <chrono>               // std::chrono_literals (1s)
+#include <atomic>               // std::atomic<bool>, std::atomic<int>
+```
+
+### 5.2 Construtor
+
+```cpp
+MissaoPTNode()
+: Node("missao_P_T"),
+  stop_requested_(false),   // atomic<bool>: false inicialmente
+  exit_code_(0)             // atomic<int>: 0 = sucesso inicialmente
+{
   timer_ = this->create_wall_timer(
-    1s, std::bind(&MissaoPTNode::startMissionAsync, this));
-  RCLCPP_INFO(this->get_logger(), "🚀 missao_P_T iniciado. Sequência: pouso → 10 s → takeoff");
+    1s,   // delay de 1 s antes de começar
+    std::bind(&MissaoPTNode::startMissionAsync, this));
+  // Por que 1 s? Garante que o executor ROS 2 terminou de inicializar.
+  // fork() durante a inicialização do DDS (rmw) pode causar deadlocks.
+}
+
+~MissaoPTNode()
+{
+  stop_requested_.store(true);   // sinaliza thread de missão para parar
+  if (mission_thread_.joinable()) mission_thread_.join();
+  // join() aguarda a thread terminar limpa antes de destruir o objeto.
 }
 ```
 
-**O que este bloco faz:**
+### 5.3 `startMissionAsync()`
 
-- O timer de 1 s atrasa o início da missão para que o executor ROS 2 possa
-  inicializar completamente antes de `fork()` ser chamado. Isso evita condições
-  de corrida na inicialização.
+```cpp
+void startMissionAsync()
+{
+  timer_->cancel();
+  // Cancela: evita que o timer dispare novamente (single-shot).
 
-### Bloco 2 — `run_subprocess()` — lançamento de subprocesso
+  mission_thread_ = std::thread(&MissaoPTNode::runMission, this);
+  // Lança runMission() em thread separada.
+  // runMission() chama waitpid() BLOQUEANTE — não pode rodar no callback do timer,
+  // pois bloquearia o executor ROS 2 e impediria logs e shutdown.
+}
+```
+
+### 5.4 `run_subprocess()` — fork/exec
 
 ```cpp
 static int run_subprocess(const char * executable) {
   pid_t pid = fork();
+  // fork(): duplica o processo. Retorna:
+  //   0   no processo filho
+  //   PID do filho no processo pai
+  //  -1   em caso de erro
+
   if (pid == 0) {
-    // Processo filho: substituir imagem com ros2 run drone_control <executable>
+    // ── Processo filho ────────────────────────────────────────────────
     execlp("ros2", "ros2", "run", "drone_control", executable,
            static_cast<char *>(nullptr));
-    _exit(127);   // execlp só retorna em caso de erro
+    // execlp: substitui a imagem do processo filho.
+    // Argumentos passados: "ros2" "run" "drone_control" "<executable>"
+    // static_cast<char*>(nullptr): sentinela de fim da lista de argumentos.
+    // Se execlp tiver sucesso → esta linha nunca é alcançada.
+    _exit(127);
+    // _exit (não exit): não chama destrutores C++ do processo pai no filho.
+    // 127 = código padrão de "command not found" no shell.
   }
+
   if (pid < 0) return -1;   // fork() falhou
 
+  // ── Processo pai ──────────────────────────────────────────────────────
   int status = 0;
-  waitpid(pid, &status, 0);   // bloqueia até o filho terminar
-  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  waitpid(pid, &status, 0);
+  // Bloqueia até o filho terminar.
+  // Chamado de mission_thread_ (NÃO do executor) → não bloqueia o ROS 2.
+
+  if (WIFEXITED(status)) {
+    return WEXITSTATUS(status);
+    // WIFEXITED: true se filho terminou normalmente (não por sinal).
+    // WEXITSTATUS: extrai os 8 bits menos significativos como exit code.
+  }
+  return -1;   // filho morto por sinal ou outro término anormal
 }
 ```
 
-**O que este bloco faz:**
-
-- `fork()` cria uma cópia exata do processo pai; o filho executa `execlp`
-  que substitui a imagem do processo por `ros2 run drone_control <exe>`.
-- `_exit(127)` no filho (não `exit()`) evita que os destrutores do processo
-  pai sejam chamados no contexto do filho — importante para recursos ROS 2.
-- `waitpid(..., 0)` é **bloqueante** — chamado a partir da thread de missão
-  (não do executor), portanto não bloqueia o spin loop do ROS 2.
-- Exit code 0 → sucesso; != 0 → falha (abortar missão).
-
-### Bloco 3 — `runMission()` — sequência completa
+### 5.5 `runMission()` — sequência P→T
 
 ```cpp
-void runMission() {
-  // FASE 1: pouso
+void runMission()
+{
+  // ── FASE 1: pouso ─────────────────────────────────────────────────────
   int pouso_result = run_subprocess("pouso");
+  // Bloqueia até o nó pouso terminar (pode levar dezenas de segundos)
+
   if (pouso_result != 0) {
-    RCLCPP_ERROR(..., "❌ [FASE 1] pouso falhou com código %d. Takeoff cancelado.", pouso_result);
+    RCLCPP_ERROR(this->get_logger(),
+      "❌ [FASE 1] pouso falhou com código %d. Takeoff cancelado.", pouso_result);
     exit_code_.store(1);
     rclcpp::shutdown();
     return;
+    // FAIL-SAFE: nunca decolar se o pouso falhou.
   }
 
-  // FASE 2: espera 10 s
-  RCLCPP_INFO(..., "⏳ [FASE 2] Aguardando 10 s…");
-  for (int i = 0; i < 10 && !stop_requested_.load(); ++i)
-    std::this_thread::sleep_for(1s);
+  // ── FASE 2: espera 10 s ────────────────────────────────────────────────
+  for (int i = 10; i > 0; --i) {
+    if (stop_requested_.load()) {
+      // Verifica a cada segundo se foi solicitada interrupção (Ctrl+C, shutdown)
+      exit_code_.store(1);
+      rclcpp::shutdown();
+      return;
+    }
+    std::this_thread::sleep_for(1s);   // dorme 1 s × 10 iterações = 10 s
+  }
 
-  // FASE 3: takeoff
+  // ── FASE 3: takeoff ────────────────────────────────────────────────────
   int takeoff_result = run_subprocess("takeoff");
+  // Bloqueia até o nó takeoff terminar
+
   if (takeoff_result != 0) {
-    RCLCPP_ERROR(..., "❌ [FASE 3] takeoff falhou com código %d.", takeoff_result);
-    exit_code_.store(1);
+    RCLCPP_WARN(this->get_logger(),
+      "⚠️  [FASE 3] takeoff encerrou com código %d.", takeoff_result);
+    exit_code_.store(1);   // exit code != 0: supervisor registra aviso
   }
-  rclcpp::shutdown();
+
+  rclcpp::shutdown();   // encerra o nó após a sequência completa
 }
 ```
-
-**O que este bloco faz:**
-
-- Comportamento **fail-safe**: se `pouso` falha (exit code != 0), o takeoff
-  é cancelado. O drone não tenta decolar se não pousou com sucesso.
-- O loop de espera de 10 s verifica `stop_requested_` a cada segundo, permitindo
-  interrupção limpa se o nó for encerrado externamente.
 
 ---
 
 ## 6. `supervisor_T.cpp`
 
-### Papel / Responsabilidade
-
-Supervisor de ciclo infinito que reage a eventos de conclusão de trajetória.
-Após cada trajetória completa, aguarda um delay configurável e lança
-`missao_P_T` (ou `pouso` local se o drone estiver na origem). Inclui proteção
-contra re-lançamento prematuro via guard de distância e cooldown de sinais.
-
-### Bloco 1 — Estados da FSM
+### 6.1 Enum de estados
 
 ```cpp
 enum class SupervisorState {
-    INIT,                 // Lança takeoff ao iniciar
-    TAKING_OFF,           // Aguarda término do takeoff
-    RUN_YAW,              // Executa drone_yaw_360 após takeoff
-    WAIT_TRAJ,            // Aguarda trajetória iniciar e terminar
-    WAIT_BEFORE_MISSION,  // Delay após fim de trajetória
-    RUN_MISSION,          // Executa missao_P_T ou pouso local
+    INIT,                 // Dispara takeoff automático ao iniciar
+    TAKING_OFF,           // Poll WNOHANG do processo takeoff
+    RUN_YAW,              // Poll WNOHANG do processo drone_yaw_360
+    WAIT_TRAJ,            // Aguarda sinais de trajetória
+    WAIT_BEFORE_MISSION,  // Delay configurável pós-trajetória
+    RUN_MISSION,          // Poll WNOHANG de missao_P_T ou pouso local
 };
 
-static constexpr int POST_RESET_COOLDOWN_TICKS = 2;  // 2 × 500 ms = 1 s
+static constexpr int POST_RESET_COOLDOWN_TICKS = 2;
+// 2 × 500 ms = 1 s de cooldown ao entrar em WAIT_TRAJ.
+// Descarta sinais residuais do missao_P_T que chegam via DDS com atraso.
 ```
 
-**O que este bloco faz:**
+### 6.2 `odom_callback()` — rastreamento da zona base
 
-- O estado `INIT` garante que o drone decola automaticamente ao iniciar o
-  supervisor — sem intervenção manual.
-- `POST_RESET_COOLDOWN_TICKS` — após entrar em `WAIT_TRAJ`, o supervisor ignora
-  sinais de trajetória por 2 ticks (1 s). Isso descarta mensagens "residuais"
-  publicadas pelo `pouso` durante o `RUN_MISSION` que ainda estão na fila.
+```cpp
+void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+    current_x_ = msg->pose.pose.position.x;   // X atual
+    current_y_ = msg->pose.pose.position.y;   // Y atual
+    odom_received_ = true;
 
-### Bloco 2 — Callbacks de trajetória
+    if (use_origin_as_base_) {
+        const double dist = std::hypot(current_x_, current_y_);
+        // dist: distância da origem (0,0)
+
+        if (dist <= base_tol_m_) {
+            if (!base_zone_entered_) {
+                base_zone_entered_    = true;
+                base_zone_enter_time_ = this->now();
+                // Início do timer de estabilidade da zona base.
+                // O drone deve permanecer dentro de base_tol_m_ por base_hold_s_
+                // para autorizar pouso local.
+            }
+            // Se já estava na zona: timer continua contando naturalmente.
+        } else {
+            if (base_zone_entered_) {
+                base_zone_entered_ = false;
+                // Saiu da zona: reseta o timer.
+                // Próxima entrada reiniciará a contagem.
+            }
+        }
+    }
+}
+```
+
+### 6.3 Callbacks de trajetória
 
 ```cpp
 void progress_callback(const std_msgs::msg::Float32::SharedPtr msg) {
-    if (state_ != SupervisorState::WAIT_TRAJ) return;   // ignorar fora do estado
+    if (state_ != SupervisorState::WAIT_TRAJ) return;
+    // Guard: ignora sinais fora do estado correto
+
     if (msg->data < 99.9f) {
         if (!trajectory_active_) {
             trajectory_active_ = true;
             trajectory_done_   = false;
-            RCLCPP_INFO(..., "▶️  Nova trajetória detectada (%.1f%%).", msg->data);
+            // Nova trajetória detectada; marca como ativa, reseta conclusão.
         }
+        // threshold 99.9f (não 100.0f): previne reset por jitter float
     } else {
         if (!trajectory_done_) {
-            trajectory_done_ = true;
-            RCLCPP_INFO(..., "📊 Progresso %.1f%% — trajetória concluída.", msg->data);
+            trajectory_active_ = true;
+            trajectory_done_   = true;
+            // Progresso ≥ 99.9%: trajetória concluída.
         }
     }
 }
 
 void finished_callback(const std_msgs::msg::Bool::SharedPtr msg) {
     if (state_ != SupervisorState::WAIT_TRAJ) return;
+
     if (!msg->data) {
-        trajectory_active_ = true;
-        trajectory_done_   = false;
-        RCLCPP_INFO(..., "▶️  Nova trajetória (/trajectory_finished=false).");
+        // false: nova trajetória iniciando (reset)
+        if (!trajectory_active_) {
+            trajectory_active_ = true;
+            trajectory_done_   = false;
+        }
     } else {
+        // true: trajetória concluída
         if (!trajectory_done_) {
-            trajectory_done_ = true;
-            RCLCPP_INFO(..., "📨 /trajectory_finished=true — concluída.");
+            trajectory_active_ = true;
+            trajectory_done_   = true;
         }
     }
 }
 ```
 
-**O que este bloco faz:**
-
-- Ambos os callbacks só atuam no estado `WAIT_TRAJ` — em outros estados,
-  os sinais são silenciosamente descartados.
-- `99.9f` como limiar (não `100.0f`) — evita que jitter de ponto flutuante
-  próximo de 100.0 cause resets espúrios.
-- Os dois callbacks são complementares: `progress_callback` para o caso
-  em que `my_drone_controller` publica apenas progresso, `finished_callback`
-  para o caso em que publica explicitamente o booleano de conclusão.
-
-### Bloco 3 — `check_trajectory()` — lógica de transição
+### 6.4 `check_trajectory()`
 
 ```cpp
 void check_trajectory() {
     if (post_reset_ticks_ > 0) {
-        --post_reset_ticks_;    // consumir cooldown
+        --post_reset_ticks_;
+        // Decrementa cooldown a cada tick (500 ms).
+        if (trajectory_active_ || trajectory_done_) {
+            reset_trajectory_guards();
+            // Descarta sinais que chegaram durante o cooldown
+            // (residuais do missao_P_T anterior ainda na fila DDS).
+        }
         return;
     }
-    if (trajectory_done_) {
-        wait_start_time_ = this->now();
-        state_ = SupervisorState::WAIT_BEFORE_MISSION;
-        RCLCPP_INFO(..., "🏁 Trajetória concluída. Aguardando %.1f s…", wait_after_traj_done_s_);
-    }
+
+    if (!trajectory_done_) return;   // aguarda conclusão
+
+    // Trajetória concluída → transição para delay pré-missão
+    reset_trajectory_guards();
+    wait_start_time_ = this->now();
+    state_ = SupervisorState::WAIT_BEFORE_MISSION;
 }
 ```
 
-**O que este bloco faz:**
-
-- O cooldown de `post_reset_ticks_` é decrementado a cada tick (500 ms) após
-  entrar em `WAIT_TRAJ`. Somente depois que ele chega a zero os sinais de
-  trajetória são processados.
-- Ao detectar `trajectory_done_`, registra o `wait_start_time_` e transita
-  para `WAIT_BEFORE_MISSION`.
-
-### Bloco 4 — `launch_child()` — lançamento de subprocesso com argumentos
+### 6.5 `check_wait_before_mission()`
 
 ```cpp
-pid_t launch_child(const char * executable,
-                   const std::vector<std::string> & extra_args)
-{
+void check_wait_before_mission() {
+    const double elapsed = (this->now() - wait_start_time_).seconds();
+
+    if (elapsed < wait_after_traj_done_s_) {
+        return;   // delay ainda não expirou
+    }
+
+    // Guard: evita re-lançamento muito próximo da última missão
+    if (min_relaunch_dist_m_ > 0.0 && last_mission_valid_ && odom_received_) {
+        const double d = std::hypot(current_x_ - last_mission_x_,
+                                    current_y_ - last_mission_y_);
+        if (d < min_relaunch_dist_m_) {
+            // Drone não se moveu o suficiente: ignora esta missão
+            post_reset_ticks_ = POST_RESET_COOLDOWN_TICKS;
+            state_ = SupervisorState::WAIT_TRAJ;
+            return;
+        }
+    }
+
+    // Verificar se está na zona base (e estável)
+    bool at_base = false;
+    if (use_origin_as_base_ && odom_received_ && base_zone_entered_) {
+        const double stable_s = (this->now() - base_zone_enter_time_).seconds();
+        if (stable_s >= base_hold_s_) {
+            at_base = true;   // estável na zona base: pouso local autorizado
+        } else {
+            return;   // ainda acumulando estabilidade: aguarda
+        }
+    }
+
+    // Lança executável escolhido
+    child_pid_ = at_base ? fork_exec_pouso_local() : fork_exec("missao_P_T");
+
+    if (child_pid_ > 0) {
+        if (odom_received_) {
+            last_mission_x_     = current_x_;   // salva posição para guard
+            last_mission_y_     = current_y_;
+            last_mission_valid_ = true;
+        }
+        state_ = SupervisorState::RUN_MISSION;
+    }
+    // child_pid_ <= 0: fork falhou → permanece em WAIT_BEFORE_MISSION e retenta
+}
+```
+
+### 6.6 `fork_exec_pouso_local()` — pouso com argumentos dinâmicos
+
+```cpp
+pid_t fork_exec_pouso_local() {
+    // Constrói strings "param:=valor" no stack antes do fork()
+    char xy_hold_tol_arg[64];
+    char xy_hold_stable_s_arg[64];
+    char xy_abort_tol_arg[64];
+    char approach_z_arg[64];
+
+    snprintf(xy_hold_tol_arg, sizeof(xy_hold_tol_arg),
+             "xy_hold_tol:=%.4f", pouso_xy_hold_tol_);
+    // Ex.: "xy_hold_tol:=0.1000" — parâmetro passado ao nó pouso
+
+    snprintf(xy_hold_stable_s_arg, sizeof(xy_hold_stable_s_arg),
+             "xy_hold_stable_s:=%.4f", pouso_xy_hold_stable_s_);
+    // Ex.: "xy_hold_stable_s:=1.0000"
+
+    snprintf(xy_abort_tol_arg, sizeof(xy_abort_tol_arg),
+             "xy_abort_tol:=%.4f", pouso_xy_abort_tol_);
+    // Ex.: "xy_abort_tol:=0.5000"
+
+    snprintf(approach_z_arg, sizeof(approach_z_arg),
+             "approach_z:=%.4f", pouso_approach_z_);
+    // Ex.: "approach_z:=-1.0000" (negativo = usar altitude atual)
+
     pid_t pid = fork();
     if (pid == 0) {
-        std::vector<const char *> argv = {"ros2", "run", "drone_control", executable};
-        if (!extra_args.empty()) {
-            argv.push_back("--ros-args");
-            for (auto & a : extra_args) argv.push_back(a.c_str());
-        }
-        argv.push_back(nullptr);
-        execvp("ros2", const_cast<char * const *>(argv.data()));
-        _exit(127);
+        execlp("ros2", "ros2", "run", "drone_control", "pouso",
+               "--ros-args",
+               "-p", "use_current_xy:=true",    // pousa na posição atual
+               "-p", xy_hold_tol_arg,
+               "-p", xy_hold_stable_s_arg,
+               "-p", xy_abort_tol_arg,
+               "-p", approach_z_arg,
+               static_cast<char *>(nullptr));
+        _exit(1);
     }
     return pid;
 }
 ```
 
-**O que este bloco faz:**
-
-- Permite passar parâmetros extras ao subprocesso, por exemplo:
-  `["-p", "use_current_xy:=true", "-p", "xy_hold_tol:=0.10"]`.
-- `execvp` (não `execlp`) — recebe vetor de argumentos em vez de lista variádica,
-  necessário para construir argumentos dinamicamente.
-
-### Bloco 5 — Guard de distância e zona base
+### 6.7 `check_mission()` — recolhimento com WNOHANG
 
 ```cpp
-// Em WAIT_BEFORE_MISSION, após o delay:
-if (use_origin_as_base_ && odom_received_) {
-    double base_hold_elapsed = (this->now() - base_zone_enter_time_).seconds();
-    bool base_ok = base_zone_entered_ && (base_hold_elapsed >= base_hold_s_);
+void check_mission() {
+    int status = 0;
+    pid_t result = waitpid(child_pid_, &status, WNOHANG);
+    // WNOHANG: retorna imediatamente.
+    //   result == 0: filho ainda em execução → retorna sem bloquear
+    //   result > 0:  filho terminou → status contém o código de saída
+    //   result < 0:  erro (filho já foi recolhido, ou PID inválido)
 
-    if (base_ok) {
-        // Pouso local (use_current_xy:=true)
-        std::vector<std::string> args = {"-p", "use_current_xy:=true", ...};
-        child_pid_ = launch_child("pouso", args);
-        current_child_exec_ = "pouso";
-    } else {
-        // Missão padrão
-        child_pid_ = launch_child("missao_P_T", {});
-        current_child_exec_ = "missao_P_T";
+    if (result == 0) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+            "[RUN_MISSION] Aguardando %s (PID %d)…",
+            current_child_exec_.c_str(), static_cast<int>(child_pid_));
+        return;   // filho ainda rodando: volta no próximo tick (500 ms)
     }
+
+    // Filho terminou
+    child_pid_ = -1;   // limpa PID; -1 = nenhum filho ativo
+
+    std_msgs::msg::Bool done_msg;
+    done_msg.data = true;
+    mission_cycle_done_pub_->publish(done_msg);
+    // Publica /mission_cycle_done=true para outros nós saberem que
+    // um ciclo completo de missão terminou.
+
+    reset_trajectory_guards();
+    post_reset_ticks_ = POST_RESET_COOLDOWN_TICKS;
+    // Ativa cooldown de 1 s para descartar sinais residuais de trajetória
+    // que podem ter sido gerados pelo pouso do missao_P_T.
+
+    state_ = SupervisorState::WAIT_TRAJ;
+    // Volta a aguardar a próxima trajetória do my_drone_controller.
 }
-
-// Guard de distância mínima de re-lançamento
-if (min_relaunch_dist_m_ > 0.0 && last_mission_valid_) {
-    double dist = std::hypot(current_x_ - last_mission_x_, current_y_ - last_mission_y_);
-    if (dist < min_relaunch_dist_m_) {
-        RCLCPP_WARN(..., "⛔ Missão ignorada: dist=%.2f m < min=%.2f m", dist, min_relaunch_dist_m_);
-        state_ = SupervisorState::WAIT_TRAJ;
-        return;
-    }
-}
-```
-
-**O que este bloco faz:**
-
-- `base_zone_entered_` é gerenciado em `odom_callback` — é setado quando
-  `hypot(x, y) <= base_tol_m_` continuamente por `base_hold_s_` segundos.
-- O guard de distância mínima (`min_relaunch_dist_m_`) previne lançamento
-  repetitivo se o drone não se moveu desde a última missão — evita pouso/decolagem
-  dupla no mesmo ponto.
-
-### Exemplo de uso completo
-
-```bash
-# Iniciar supervisor com parâmetros customizados
-ros2 run drone_control supervisor_T --ros-args \
-  -p wait_after_traj_done_s:=3.0 \
-  -p base_tol_m:=0.15 \
-  -p base_hold_s:=2.0 \
-  -p min_relaunch_dist_m:=0.3
-
-# Em outro terminal, simular conclusão de trajetória
-ros2 topic pub /trajectory_finished std_msgs/msg/Bool "data: true" --once
-
-# Monitorar estado (logs do supervisor)
-ros2 topic echo /trajectory_progress
-ros2 topic echo /trajectory_finished
 ```
