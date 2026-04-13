@@ -31,36 +31,36 @@ o `drone_control` contém os **nós de alto nível** responsáveis por:
 ┌────────────────────────────────────────────────────────────────────┐
 │                        drone_control                               │
 │                                                                    │
-│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐             │
-│  │  takeoff    │   │    pouso    │   │ drone_yaw_  │             │
-│  │   (FSM)     │   │  (CENTER/  │   │    360      │             │
-│  └──────┬──────┘   │  DESCEND)  │   └──────┬──────┘             │
-│         │          └──────┬──────┘          │                     │
-│         │    /waypoints   │          /uav1/yaw_override/cmd       │
-│         └────────────┬────┘                 │                     │
-│                      │              ┌────────┘                     │
-│  ┌─────────────┐     │              │                             │
-│  │ missao_P_T  │     │              │                             │
-│  │(subprocess) ├─fork/execlp→      │                             │
-│  └──────▲──────┘  takeoff/pouso    │                             │
-│         │                          │                             │
-│  ┌──────┴──────┐                   │                             │
-│  │ supervisor_T│◄──/trajectory_finished──────────────────────────│
-│  │   (FSM)     │◄──/trajectory_progress                          │
-│  └─────────────┘                   │                             │
-│                                    │                             │
-│  ┌─────────────┐                   │                             │
-│  │camera_viewer│◄──/uav1/rgbd_*/color/image_raw                  │
-│  └─────────────┘                                                  │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐               │
+│  │  takeoff    │   │    pouso    │   │ drone_yaw_  │               │
+│  │   (FSM)     │   │  (CENTER/   │   │    360      │               │
+│  └──────┬──────┘   │  DESCEND)   │   └──────┬──────┘               │
+│         │          └──────┬──────┘          │                      │
+│         │    /waypoints   │          /uav1/yaw_override/cmd        │
+│         └────────────┬────┘                 │                      │
+│                      │             ┌────────┘                      │
+│  ┌─────────────┐     │             │                               │
+│  │ missao_P_T  │     │             │                               │
+│  │(subprocess) ├─fork/execlp→      │                               │
+│  └──────▲──────┘  takeoff/pouso    │                               │
+│         │                          │                               │
+│  ┌──────┴──────┐                   │                               │
+│  │ supervisor_T│◄──/trajectory_finished────────────────────────────│
+│  │   (FSM)     │◄──/trajectory_progress                            │
+│  └─────────────┘                   │                               │
+│                                    │                               │
+│  ┌─────────────┐                   │                               │
+│  │camera_viewer│◄──/uav1/rgbd_*/color/image_raw                    │
+│  └─────────────┘                                                   │
 └────────────────────────────────────────────────────────────────────┘
              │ /waypoints           │ /uav1/yaw_override/cmd
              ▼                      ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │                      my_drone_controller                           │
 │                                                                    │
-│  FSM: WAIT → TAKEOFF → HOVER → TRAJECTORY → LANDING               │
-│  Publica: /trajectory_finished, /trajectory_progress              │
-│  Assina:  /waypoints, /uav1/yaw_override/cmd                      │
+│  FSM: WAIT → TAKEOFF → HOVER → TRAJECTORY → LANDING                │
+│  Publica: /trajectory_finished, /trajectory_progress               │
+│  Assina:  /waypoints, /uav1/yaw_override/cmd                       │
 └────────────────────────────────────────────────────────────────────┘
              │ MAVROS
              ▼
