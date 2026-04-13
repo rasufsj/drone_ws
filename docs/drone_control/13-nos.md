@@ -844,7 +844,18 @@ void runMission()
 
 ## 6. `supervisor_T.cpp`
 
-### 6.1 Enum de estados
+### 6.1 Mapa de pubs/subs e timer
+
+| Tópico | Tipo | Direção | Callback / variável |
+|--------|------|---------|----------------------|
+| `/trajectory_progress` | `std_msgs/Float32` | sub | `progress_callback()` → `trajectory_active_`, `trajectory_done_` |
+| `/trajectory_finished` | `std_msgs/Bool` | sub | `finished_callback()` → `trajectory_active_`, `trajectory_done_` |
+| `/<uav_name>/mavros/local_position/odom` | `nav_msgs/Odometry` | sub | `odom_callback()` → `current_x_`, `current_y_`, `base_zone_entered_` |
+| `/mission_cycle_done` | `std_msgs/Bool` | pub | publicado em `check_mission()` ao final de cada ciclo |
+| `/yaw_scan_done` | `std_msgs/Bool` | pub | publicado em `check_yaw()` após o giro de 360° inicial |
+| *(wall timer 500 ms)* | — | — | `fsm_tick()` — dispatcher principal da FSM |
+
+### 6.2 Enum de estados e constante de cooldown
 
 ```cpp
 enum class SupervisorState {
@@ -861,7 +872,225 @@ static constexpr int POST_RESET_COOLDOWN_TICKS = 2;
 // Descarta sinais residuais do missao_P_T que chegam via DDS com atraso.
 ```
 
-### 6.2 `odom_callback()` — rastreamento da zona base
+### 6.3 Construtor — parâmetros, pub/sub e timer
+
+```cpp
+SupervisorTNode()
+: Node("supervisor_T"),
+  state_(SupervisorState::INIT),
+  child_pid_(-1),
+  trajectory_active_(false),
+  trajectory_done_(false),
+  post_reset_ticks_(0),
+  odom_received_(false),
+  current_x_(0.0),
+  current_y_(0.0),
+  use_origin_as_base_(false),       // sobrescrito pelo parâmetro use_origin_as_base
+  wait_after_traj_done_s_(0.0),
+  wait_start_time_(0, 0, RCL_ROS_TIME),  // sentinela; sobrescrito em check_trajectory()
+  min_relaunch_dist_m_(0.5),
+  last_mission_valid_(false),
+  last_mission_x_(0.0),
+  last_mission_y_(0.0),
+  current_child_exec_("missao_P_T"),
+  base_tol_m_(0.20),
+  base_hold_s_(2.0),
+  base_zone_entered_(false),
+  base_zone_enter_time_(0, 0, RCL_ROS_TIME),
+  pouso_xy_hold_tol_(0.10),
+  pouso_xy_hold_stable_s_(1.0),
+  pouso_xy_abort_tol_(0.5),
+  pouso_approach_z_(-1.0)
+{
+    // ── Declaração e leitura de parâmetros ────────────────────────────────
+    this->declare_parameter<std::string>("uav_name", "uav1");
+    uav_name_ = this->get_parameter("uav_name").as_string();
+    // uav_name: prefixo dos tópicos MAVROS (ex.: "uav1" → "/uav1/mavros/…")
+
+    this->declare_parameter<bool>("use_origin_as_base", true);
+    use_origin_as_base_ = this->get_parameter("use_origin_as_base").as_bool();
+    // true (padrão): lança pouso local quando o drone está estável na origem.
+    // false: sempre lança missao_P_T.
+
+    this->declare_parameter<double>("wait_after_traj_done_s", 5.0);
+    wait_after_traj_done_s_ = this->get_parameter("wait_after_traj_done_s").as_double();
+    // Segundos de espera em WAIT_BEFORE_MISSION antes de lançar a próxima missão.
+
+    this->declare_parameter<double>("min_relaunch_dist_m", 0.5);
+    min_relaunch_dist_m_ = this->get_parameter("min_relaunch_dist_m").as_double();
+    // Guard: ignora lançamento se o drone não se moveu min_relaunch_dist_m_ desde a última missão.
+
+    this->declare_parameter<double>("base_tol_m", 0.20);
+    base_tol_m_ = this->get_parameter("base_tol_m").as_double();
+    // Raio (m) da zona base em torno de (0,0).
+
+    this->declare_parameter<double>("base_hold_s", 2.0);
+    base_hold_s_ = this->get_parameter("base_hold_s").as_double();
+    // Tempo contínuo (s) dentro de base_tol_m_ para autorizar pouso local.
+
+    this->declare_parameter<double>("pouso_xy_hold_tol", 0.10);
+    pouso_xy_hold_tol_ = this->get_parameter("pouso_xy_hold_tol").as_double();
+    // Repassado ao nó pouso como xy_hold_tol (tolerância XY para fase CENTER).
+
+    this->declare_parameter<double>("pouso_xy_hold_stable_s", 1.0);
+    pouso_xy_hold_stable_s_ = this->get_parameter("pouso_xy_hold_stable_s").as_double();
+    // Repassado ao nó pouso como xy_hold_stable_s.
+
+    this->declare_parameter<double>("pouso_xy_abort_tol", 0.5);
+    pouso_xy_abort_tol_ = this->get_parameter("pouso_xy_abort_tol").as_double();
+    // Repassado ao nó pouso como xy_abort_tol (limiar de abortar descida).
+
+    this->declare_parameter<double>("pouso_approach_z", -1.0);
+    pouso_approach_z_ = this->get_parameter("pouso_approach_z").as_double();
+    // Repassado ao nó pouso como approach_z; -1.0 = usar altitude atual.
+
+    // ── Subscriptions ─────────────────────────────────────────────────────
+    progress_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+        "/trajectory_progress", 10,
+        std::bind(&SupervisorTNode::progress_callback, this, std::placeholders::_1));
+    // /trajectory_progress: publicado pelo my_drone_controller; float [0, 100].
+
+    finished_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+        "/trajectory_finished", 10,
+        std::bind(&SupervisorTNode::finished_callback, this, std::placeholders::_1));
+    // /trajectory_finished: false = nova trajetória começou; true = concluída.
+
+    odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        "/" + uav_name_ + "/mavros/local_position/odom", 10,
+        std::bind(&SupervisorTNode::odom_callback, this, std::placeholders::_1));
+    // Ex.: "/uav1/mavros/local_position/odom" — para rastrear posição XY.
+
+    // ── Publishers ────────────────────────────────────────────────────────
+    mission_cycle_done_pub_ = this->create_publisher<std_msgs::msg::Bool>(
+        "/mission_cycle_done", 10);
+    // Sinaliza ao Python supervisor (pad_waypoint_supervisor) que um ciclo completo terminou.
+
+    yaw_scan_done_pub_ = this->create_publisher<std_msgs::msg::Bool>(
+        "/yaw_scan_done", 10);
+    // Sinaliza que o giro inicial de 360° (drone_yaw_360) foi concluído.
+
+    // ── Timer FSM (500 ms) ────────────────────────────────────────────────
+    fsm_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(500),
+        std::bind(&SupervisorTNode::fsm_tick, this));
+    // fsm_tick() chama o handler do estado atual sem bloquear o executor.
+}
+```
+
+### 6.4 `fsm_tick()` — dispatcher da FSM
+
+```cpp
+void fsm_tick() {
+    switch (state_) {
+        case SupervisorState::INIT:
+            do_init();                  // → TAKING_OFF
+            break;
+        case SupervisorState::TAKING_OFF:
+            check_takeoff();            // → RUN_YAW ou WAIT_TRAJ
+            break;
+        case SupervisorState::RUN_YAW:
+            check_yaw();                // → WAIT_TRAJ
+            break;
+        case SupervisorState::WAIT_TRAJ:
+            check_trajectory();         // → WAIT_BEFORE_MISSION
+            break;
+        case SupervisorState::WAIT_BEFORE_MISSION:
+            check_wait_before_mission(); // → RUN_MISSION ou WAIT_TRAJ
+            break;
+        case SupervisorState::RUN_MISSION:
+            check_mission();            // → WAIT_TRAJ
+            break;
+    }
+}
+```
+
+### 6.5 `do_init()` — lançamento do takeoff
+
+```cpp
+void do_init() {
+    // fork_exec("takeoff"): executa "ros2 run drone_control takeoff"
+    child_pid_ = fork_exec("takeoff");
+
+    if (child_pid_ > 0) {
+        // Takeoff iniciado com sucesso → monitora em TAKING_OFF.
+        state_ = SupervisorState::TAKING_OFF;
+    } else {
+        // fork() falhou (geralmente recursos esgotados): tenta novamente no próximo tick.
+        RCLCPP_ERROR(this->get_logger(),
+            "[INIT] fork() falhou ao iniciar takeoff! Tentando novamente em 500 ms…");
+    }
+}
+```
+
+### 6.6 `check_takeoff()` — recolhimento WNOHANG do takeoff
+
+```cpp
+void check_takeoff() {
+    int status = 0;
+    pid_t result = waitpid(child_pid_, &status, WNOHANG);
+    // WNOHANG: não bloqueia; retorna 0 se o filho ainda está em execução.
+
+    if (result == 0) {
+        // Takeoff ainda rodando → aguarda o próximo tick (500 ms).
+        return;
+    }
+
+    if (result > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        // exit code 0 = takeoff concluído com sucesso → lança drone_yaw_360.
+        pid_t yaw_pid = fork_exec_yaw360();
+        child_pid_ = -1;   // limpa PID do takeoff já recolhido
+
+        if (yaw_pid > 0) {
+            child_pid_ = yaw_pid;
+            state_ = SupervisorState::RUN_YAW;
+            // Aguarda drone_yaw_360 completar o giro inicial de 360°.
+        } else {
+            // fork() falhou para drone_yaw_360: pula o giro e vai direto para WAIT_TRAJ.
+            reset_trajectory_guards();
+            post_reset_ticks_ = POST_RESET_COOLDOWN_TICKS;
+            state_ = SupervisorState::WAIT_TRAJ;
+        }
+    } else {
+        // Takeoff encerrou com erro (exit ≠ 0 ou sinalizado): vai para WAIT_TRAJ.
+        child_pid_ = -1;
+        reset_trajectory_guards();
+        post_reset_ticks_ = POST_RESET_COOLDOWN_TICKS;
+        state_ = SupervisorState::WAIT_TRAJ;
+    }
+}
+```
+
+### 6.7 `check_yaw()` — recolhimento WNOHANG do drone_yaw_360
+
+```cpp
+void check_yaw() {
+    int status = 0;
+    pid_t result = waitpid(child_pid_, &status, WNOHANG);
+
+    if (result == 0) {
+        // drone_yaw_360 ainda rodando → aguarda o próximo tick.
+        return;
+    }
+
+    // Processo terminou (exit code 0, ≠ 0 ou sinalizado).
+    child_pid_ = -1;
+
+    reset_trajectory_guards();
+    post_reset_ticks_ = POST_RESET_COOLDOWN_TICKS;
+    // Cooldown de 1 s ao entrar em WAIT_TRAJ evita processar sinais de trajetória
+    // que podem ter chegado enquanto o drone_yaw_360 estava em execução.
+
+    // Notifica outros nós (pad_waypoint_supervisor) que o scan inicial terminou.
+    std_msgs::msg::Bool scan_done;
+    scan_done.data = true;
+    yaw_scan_done_pub_->publish(scan_done);
+    // /yaw_scan_done=true → Python supervisor pode começar a enviar trajetórias.
+
+    state_ = SupervisorState::WAIT_TRAJ;
+}
+```
+
+### 6.8 `odom_callback()` — rastreamento da zona base
 
 ```cpp
 void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -893,7 +1122,7 @@ void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
 }
 ```
 
-### 6.3 Callbacks de trajetória
+### 6.9 Callbacks de trajetória
 
 ```cpp
 void progress_callback(const std_msgs::msg::Float32::SharedPtr msg) {
@@ -935,7 +1164,7 @@ void finished_callback(const std_msgs::msg::Bool::SharedPtr msg) {
 }
 ```
 
-### 6.4 `check_trajectory()`
+### 6.10 `check_trajectory()`
 
 ```cpp
 void check_trajectory() {
@@ -959,7 +1188,7 @@ void check_trajectory() {
 }
 ```
 
-### 6.5 `check_wait_before_mission()`
+### 6.11 `check_wait_before_mission()`
 
 ```cpp
 void check_wait_before_mission() {
@@ -1007,41 +1236,85 @@ void check_wait_before_mission() {
 }
 ```
 
-### 6.6 `fork_exec_pouso_local()` — pouso com argumentos dinâmicos
+### 6.12 `fork_exec()` e `fork_exec_yaw360()` — helpers genéricos de fork
+
+```cpp
+// Lança: ros2 run drone_control <executable>
+pid_t fork_exec(const char * executable) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Processo filho: substitui imagem do processo pelo executável ROS 2.
+        execlp("ros2", "ros2", "run", "drone_control", executable,
+               static_cast<char *>(nullptr));
+        // execlp só retorna em caso de falha.
+        _exit(1);
+    }
+    return pid;   // > 0 no pai = sucesso; -1 = fork() falhou
+}
+
+// Lança: ros2 run drone_control drone_yaw_360 --ros-args -p yaw_target_delta:=6.2831853
+pid_t fork_exec_yaw360() {
+    pid_t pid = fork();
+    if (pid == 0) {
+        execlp("ros2", "ros2", "run", "drone_control", "drone_yaw_360",
+               "--ros-args", "-p", "yaw_target_delta:=6.2831853",
+               static_cast<char *>(nullptr));
+        // 6.2831853 ≈ 2π rad = giro completo de 360° em sentido CCW.
+        _exit(1);
+    }
+    return pid;
+}
+```
+
+> **Nota de segurança pós-fork:** As strings de argumento são construídas no
+> stack do pai **antes** do `fork()` em `fork_exec_pouso_local()`, garantindo
+> que os ponteiros passados ao `execlp()` no filho apontem para páginas válidas
+> via copy-on-write. Nunca use `std::string::c_str()` pós-fork quando o pai
+> pode estar alocando heap.
+
+### 6.13 `fork_exec_pouso_local()` — pouso com argumentos dinâmicos
 
 ```cpp
 pid_t fork_exec_pouso_local() {
     // Constrói strings "param:=valor" no stack antes do fork()
+    // 64 bytes é suficiente para qualquer double (ex.: "xy_hold_stable_s:=-1234.5678" ≈ 29 chars).
     char xy_hold_tol_arg[64];
     char xy_hold_stable_s_arg[64];
     char xy_abort_tol_arg[64];
     char approach_z_arg[64];
 
-    snprintf(xy_hold_tol_arg, sizeof(xy_hold_tol_arg),
-             "xy_hold_tol:=%.4f", pouso_xy_hold_tol_);
-    // Ex.: "xy_hold_tol:=0.1000" — parâmetro passado ao nó pouso
+    const int r1 = snprintf(xy_hold_tol_arg,      sizeof(xy_hold_tol_arg),
+                            "xy_hold_tol:=%.4f",       pouso_xy_hold_tol_);
+    const int r2 = snprintf(xy_hold_stable_s_arg, sizeof(xy_hold_stable_s_arg),
+                            "xy_hold_stable_s:=%.4f",  pouso_xy_hold_stable_s_);
+    const int r3 = snprintf(xy_abort_tol_arg,     sizeof(xy_abort_tol_arg),
+                            "xy_abort_tol:=%.4f",      pouso_xy_abort_tol_);
+    const int r4 = snprintf(approach_z_arg,       sizeof(approach_z_arg),
+                            "approach_z:=%.4f",        pouso_approach_z_);
 
-    snprintf(xy_hold_stable_s_arg, sizeof(xy_hold_stable_s_arg),
-             "xy_hold_stable_s:=%.4f", pouso_xy_hold_stable_s_);
-    // Ex.: "xy_hold_stable_s:=1.0000"
-
-    snprintf(xy_abort_tol_arg, sizeof(xy_abort_tol_arg),
-             "xy_abort_tol:=%.4f", pouso_xy_abort_tol_);
-    // Ex.: "xy_abort_tol:=0.5000"
-
-    snprintf(approach_z_arg, sizeof(approach_z_arg),
-             "approach_z:=%.4f", pouso_approach_z_);
-    // Ex.: "approach_z:=-1.0000" (negativo = usar altitude atual)
+    // Validação: snprintf retorna < 0 (erro) ou >= N (truncamento).
+    if (r1 < 0 || r1 >= static_cast<int>(sizeof(xy_hold_tol_arg)) ||
+        r2 < 0 || r2 >= static_cast<int>(sizeof(xy_hold_stable_s_arg)) ||
+        r3 < 0 || r3 >= static_cast<int>(sizeof(xy_abort_tol_arg)) ||
+        r4 < 0 || r4 >= static_cast<int>(sizeof(approach_z_arg))) {
+        RCLCPP_WARN(this->get_logger(),
+            "[fork_exec_pouso_local] snprintf falhou ou truncou — usando defaults seguros.");
+        // Sobrescreve com valores padrão codificados para evitar passar string corrompida.
+        snprintf(xy_hold_tol_arg,      sizeof(xy_hold_tol_arg),      "xy_hold_tol:=0.1000");
+        snprintf(xy_hold_stable_s_arg, sizeof(xy_hold_stable_s_arg), "xy_hold_stable_s:=1.0000");
+        snprintf(xy_abort_tol_arg,     sizeof(xy_abort_tol_arg),     "xy_abort_tol:=0.5000");
+        snprintf(approach_z_arg,       sizeof(approach_z_arg),       "approach_z:=-1.0000");
+    }
 
     pid_t pid = fork();
     if (pid == 0) {
         execlp("ros2", "ros2", "run", "drone_control", "pouso",
                "--ros-args",
-               "-p", "use_current_xy:=true",    // pousa na posição atual
-               "-p", xy_hold_tol_arg,
-               "-p", xy_hold_stable_s_arg,
-               "-p", xy_abort_tol_arg,
-               "-p", approach_z_arg,
+               "-p", "use_current_xy:=true",    // pousa na posição XY atual
+               "-p", xy_hold_tol_arg,           // ex.: "xy_hold_tol:=0.1000"
+               "-p", xy_hold_stable_s_arg,      // ex.: "xy_hold_stable_s:=1.0000"
+               "-p", xy_abort_tol_arg,          // ex.: "xy_abort_tol:=0.5000"
+               "-p", approach_z_arg,            // ex.: "approach_z:=-1.0000"
                static_cast<char *>(nullptr));
         _exit(1);
     }
@@ -1049,7 +1322,7 @@ pid_t fork_exec_pouso_local() {
 }
 ```
 
-### 6.7 `check_mission()` — recolhimento com WNOHANG
+### 6.14 `check_mission()` — recolhimento com WNOHANG
 
 ```cpp
 void check_mission() {
@@ -1085,3 +1358,110 @@ void check_mission() {
     // Volta a aguardar a próxima trajetória do my_drone_controller.
 }
 ```
+
+### 6.15 Membros da classe `SupervisorTNode`
+
+```cpp
+// ── ROS 2 handles ─────────────────────────────────────────────────────────
+rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr  progress_sub_;
+rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr     finished_sub_;
+rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr        mission_cycle_done_pub_;
+rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr        yaw_scan_done_pub_;
+rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+rclcpp::TimerBase::SharedPtr                             fsm_timer_;
+
+// ── FSM ────────────────────────────────────────────────────────────────────
+SupervisorState state_;            // estado atual da FSM
+pid_t           child_pid_;        // PID do processo filho (-1 se nenhum ativo)
+bool            trajectory_active_;// true enquanto uma trajetória está em progresso
+bool            trajectory_done_;  // true quando conclusão de trajetória confirmada
+int             post_reset_ticks_; // ticks de cooldown restantes ao entrar em WAIT_TRAJ
+
+// ── Odometria / posição atual ─────────────────────────────────────────────
+std::string uav_name_;             // param: prefixo de namespace (ex.: "uav1")
+bool        odom_received_;        // true após primeira mensagem de odometria
+double      current_x_;            // posição X atual (m, frame local ENU)
+double      current_y_;            // posição Y atual (m, frame local ENU)
+
+// ── Política de lançamento de missão ─────────────────────────────────────
+bool        use_origin_as_base_;      // param: gatea pouso na proximidade da origem
+double      wait_after_traj_done_s_;  // param: delay (s) antes de lançar missão
+rclcpp::Time wait_start_time_;        // timestamp de início do WAIT_BEFORE_MISSION
+double      min_relaunch_dist_m_;     // param: distância mínima (m) do último lançamento
+bool        last_mission_valid_;      // true após ao menos um lançamento com odom válida
+double      last_mission_x_;          // X de odometria no último lançamento de missão
+double      last_mission_y_;          // Y de odometria no último lançamento de missão
+std::string current_child_exec_;      // nome do executável em execução em RUN_MISSION
+
+// ── Rastreamento da zona base ─────────────────────────────────────────────
+double       base_tol_m_;            // param: raio (m) da zona base em torno de (0,0)
+double       base_hold_s_;           // param: tempo mínimo estável (s) na zona base
+bool         base_zone_entered_;     // true enquanto dist(x,y,origin) <= base_tol_m_
+rclcpp::Time base_zone_enter_time_;  // timestamp quando o drone entrou na zona base
+
+// ── Parâmetros repassados ao pouso no lançamento local ────────────────────
+double pouso_xy_hold_tol_;           // param → pouso xy_hold_tol
+double pouso_xy_hold_stable_s_;      // param → pouso xy_hold_stable_s
+double pouso_xy_abort_tol_;          // param → pouso xy_abort_tol
+double pouso_approach_z_;            // param → pouso approach_z
+```
+
+### 6.16 Fluxo geral da FSM
+
+```
+startup
+   │
+   ▼
+[INIT] ─── fork("takeoff") ─────────────────────► [TAKING_OFF]
+                                                        │
+                              ┌─── exit==0 ────────────┤
+                              │                         │ exit≠0
+                              ▼                         │
+                          fork_yaw360()                 │
+                              │                         │
+                          fork ok ─────────►  [RUN_YAW] │
+                          fork fail ─────────────────────┤
+                                                         ▼
+                                                    [WAIT_TRAJ]  ◄──────────────────┐
+                                                         │                           │
+                                      post_reset_ticks_ > 0: descarta sinais (1 s)  │
+                                                         │                           │
+                                      trajectory_done_=true                          │
+                                                         │                           │
+                                                         ▼                           │
+                                               [WAIT_BEFORE_MISSION]                 │
+                                                         │                           │
+                       ┌─── min_relaunch_dist_m_ guard ──┤ falha guard ─────────────┤
+                       │                                 │                           │
+                       │    base_hold_s_ ainda contando ─┤ aguarda                  │
+                       │                                 │                           │
+                       │                    at_base?     │                           │
+                       │                  ┌──── true ────┤                           │
+                       │                  │              │ false                     │
+                       │            fork_pouso_local()   fork("missao_P_T")          │
+                       │                  └──────────────┘                           │
+                       │                        │                                    │
+                       │                        ▼                                    │
+                       │                  [RUN_MISSION]                              │
+                       │                        │                                    │
+                       │                  waitpid(WNOHANG)                           │
+                       │                        │ filho terminou                     │
+                       │                  publish /mission_cycle_done=true           │
+                       │                  post_reset_ticks_ = 2                     │
+                       └──────────────────────► └──────────────────────────────────►┘
+```
+
+### 6.17 Casos de falha e comportamento esperado
+
+| Situação | Estado afetado | Comportamento |
+|----------|---------------|---------------|
+| `fork()` falha em `do_init()` | INIT | Permanece em INIT; retenta no próximo tick (500 ms) |
+| `takeoff` encerra com exit ≠ 0 | TAKING_OFF | Transiciona direto para WAIT_TRAJ; cooldown ativado |
+| `fork()` falha para `drone_yaw_360` | TAKING_OFF | Pula RUN_YAW; vai direto para WAIT_TRAJ com cooldown |
+| `drone_yaw_360` encerra com qualquer exit | RUN_YAW | Publica `/yaw_scan_done=true` e vai para WAIT_TRAJ independente do código de saída |
+| Sinais residuais de trajetória após transição para WAIT_TRAJ | WAIT_TRAJ | `post_reset_ticks_` descarta todos os sinais durante os 2 primeiros ticks (1 s) |
+| Drone não se moveu `min_relaunch_dist_m_` desde último lançamento | WAIT_BEFORE_MISSION | Missão ignorada; volta para WAIT_TRAJ com cooldown |
+| `fork()` falha ao lançar missão | WAIT_BEFORE_MISSION | Permanece em WAIT_BEFORE_MISSION; retenta no próximo tick (500 ms) |
+| `missao_P_T` ou `pouso` encerra com exit ≠ 0 | RUN_MISSION | Ciclo é contado como encerrado; publica `/mission_cycle_done=true` e volta para WAIT_TRAJ |
+| Odometria nunca recebida | WAIT_BEFORE_MISSION | `odom_received_=false` → guard de re-lançamento desativado; zone-base também desativada; lança `missao_P_T` sem verificar distância |
+| `snprintf` trunca argumento em `fork_exec_pouso_local()` | RUN_MISSION | Argumento substituído por string default hard-coded; operação prossegue com valores padrão seguros |

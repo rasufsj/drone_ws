@@ -243,13 +243,21 @@ local se o drone estiver na origem). A FSM suporta ciclos infinitos.
 
 | Função | Descrição |
 |--------|-----------|
-| `SupervisorTNode()` | Construtor: parâmetros, sub/timer a 500 ms |
-| `timerCallback()` | Dispatcher principal da FSM |
-| `check_trajectory()` | Verifica sinais de progresso/conclusão no estado WAIT_TRAJ |
-| `poll_child()` | WNOHANG: recolhe subprocessos terminados via `waitpid` |
-| `launch_child()` | Fork/execlp com argumentos extras (ex.: `use_current_xy:=true`) |
-| `odomCallback()` | Atualiza posição XY atual para detecção da zona base |
-| `update_base_zone()` | Verifica se o drone está na zona base e acumula hold timer |
+| `SupervisorTNode()` | Construtor: declara todos os parâmetros, cria pub/sub, inicia timer FSM a 500 ms |
+| `fsm_tick()` | Dispatcher principal da FSM; chama o handler do estado atual a cada 500 ms |
+| `do_init()` | INIT: faz `fork_exec("takeoff")` e transiciona para TAKING_OFF |
+| `check_takeoff()` | TAKING_OFF: `waitpid(WNOHANG)` do processo takeoff; exit 0 → RUN_YAW, senão → WAIT_TRAJ |
+| `check_yaw()` | RUN_YAW: `waitpid(WNOHANG)` do `drone_yaw_360`; ao terminar publica `/yaw_scan_done=true` e vai para WAIT_TRAJ |
+| `check_trajectory()` | WAIT_TRAJ: descarta sinais durante cooldown (`post_reset_ticks_`); quando `trajectory_done_=true` → WAIT_BEFORE_MISSION |
+| `check_wait_before_mission()` | WAIT_BEFORE_MISSION: aplica delay configurável, guard de re-lançamento e detecção da zona base antes de lançar missão |
+| `check_mission()` | RUN_MISSION: `waitpid(WNOHANG)` de `missao_P_T` ou `pouso`; ao terminar publica `/mission_cycle_done=true` e volta a WAIT_TRAJ |
+| `odom_callback()` | Atualiza `current_x_`, `current_y_`; rastrea entrada/saída da zona base com timer de estabilidade inline |
+| `progress_callback()` | WAIT_TRAJ: atualiza `trajectory_active_`/`trajectory_done_` a partir de `/trajectory_progress` |
+| `finished_callback()` | WAIT_TRAJ: atualiza `trajectory_active_`/`trajectory_done_` a partir de `/trajectory_finished` |
+| `fork_exec()` | Genérico: `fork()`/`execlp()` para `ros2 run drone_control <exec>` |
+| `fork_exec_yaw360()` | Especializado: lança `drone_yaw_360 --ros-args -p yaw_target_delta:=6.2831853` |
+| `fork_exec_pouso_local()` | Especializado: lança `pouso` com `use_current_xy:=true` e parâmetros de tolerância do supervisor |
+| `reset_trajectory_guards()` | Reseta `trajectory_active_` e `trajectory_done_` para false |
 
 ### Tópicos
 
@@ -257,14 +265,21 @@ local se o drone estiver na origem). A FSM suporta ciclos infinitos.
 |--------|------|---------|
 | `/trajectory_progress` | `std_msgs/Float32` | sub |
 | `/trajectory_finished` | `std_msgs/Bool` | sub |
-| `/uav1/mavros/local_position/odom` | `nav_msgs/Odometry` | sub |
+| `/mission_cycle_done` | `std_msgs/Bool` | pub |
+| `/yaw_scan_done` | `std_msgs/Bool` | pub |
+| `/<uav_name>/mavros/local_position/odom` | `nav_msgs/Odometry` | sub |
 
 ### Parâmetros principais
 
 | Parâmetro | Padrão | Descrição |
 |-----------|--------|-----------|
-| `wait_after_traj_done_s` | `5.0` | Delay antes de lançar missão (s) |
-| `use_origin_as_base` | `true` | Pousar localmente se estiver na origem |
-| `base_tol_m` | `0.20` | Raio da zona base (m) |
-| `base_hold_s` | `2.0` | Tempo de permanência para confirmar zona base (s) |
-| `min_relaunch_dist_m` | `0.5` | Distância mínima para permitir novo lançamento (m) |
+| `uav_name` | `uav1` | Namespace do UAV (prefixo dos tópicos MAVROS) |
+| `use_origin_as_base` | `true` | Pousar localmente (via `pouso`) se o drone estiver estável na origem |
+| `wait_after_traj_done_s` | `5.0` | Delay (s) antes de lançar missão após trajetória concluída |
+| `min_relaunch_dist_m` | `0.5` | Distância mínima XY (m) da última missão para permitir novo lançamento; 0 = desabilitado |
+| `base_tol_m` | `0.20` | Raio (m) da zona base em torno de (0,0) para triggerar pouso local |
+| `base_hold_s` | `2.0` | Tempo contínuo (s) dentro de `base_tol_m` para autorizar pouso local |
+| `pouso_xy_hold_tol` | `0.10` | Parâmetro `xy_hold_tol` repassado ao `pouso` no pouso local |
+| `pouso_xy_hold_stable_s` | `1.0` | Parâmetro `xy_hold_stable_s` repassado ao `pouso` no pouso local |
+| `pouso_xy_abort_tol` | `0.5` | Parâmetro `xy_abort_tol` repassado ao `pouso` no pouso local |
+| `pouso_approach_z` | `-1.0` | Parâmetro `approach_z` repassado ao `pouso`; `-1.0` = usar altitude atual |

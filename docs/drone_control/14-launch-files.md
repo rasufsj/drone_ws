@@ -105,6 +105,11 @@ def generate_launch_description():
 
 ## 3. `mission_three_nodes.launch.py`
 
+> ⚠️ **Executáveis ausentes:** `drone_soft_land`, `drone_activator` e `drone_go_forward`
+> são referenciados por este launch file mas **não possuem arquivo-fonte em
+> `drone_control/src/`**. Este launch file é mantido para referência histórica; para
+> que funcione, esses executáveis devem ser fornecidos por outro pacote do workspace.
+
 ### Arquivo completo
 
 ```python
