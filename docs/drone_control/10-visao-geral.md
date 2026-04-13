@@ -199,5 +199,5 @@ ros2 run drone_control camera_viewer
 # Executar via launch
 ros2 launch drone_control supervisor_T.launch.py
 ros2 launch drone_control camera_viewer.launch.py
-ros2 launch drone_control tf_camera_static.launch.py
+ros2 launch yolo_pad_pose tf_camera_static.launch.py
 ```
