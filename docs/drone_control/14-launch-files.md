@@ -258,6 +258,9 @@ Ou edite o launch file adicionando `parameters=[{...}]` ao `Node(...)`.
 
 ## 5. `tf_body_fallback.launch.py`
 
+> **⚠️ Movido para o pacote `yolo_pad_pose`.**
+> Use: `ros2 launch yolo_pad_pose tf_body_fallback.launch.py`
+
 ### Arquivo completo
 
 ```python
@@ -314,6 +317,9 @@ def generate_launch_description():      # (3)
 ---
 
 ## 6. `tf_camera_static.launch.py`
+
+> **⚠️ Movido para o pacote `yolo_pad_pose`.**
+> Use: `ros2 launch yolo_pad_pose tf_camera_static.launch.py`
 
 ### Arquivo completo
 
@@ -385,7 +391,7 @@ uav1/base_link             ← publicado por tf_body_fallback.launch.py
 
 ```bash
 # Sobe as TFs
-ros2 launch drone_control tf_camera_static.launch.py
+ros2 launch yolo_pad_pose tf_camera_static.launch.py
 
 # Verifica câmera down (deve responder imediatamente)
 ros2 run tf2_ros tf2_echo uav1/fcu uav1/rgbd_down
@@ -407,10 +413,10 @@ ros2 run tf2_tools view_frames
 ros2 run my_drone_controller drone_node
 
 # 3. TF estrutural (se não publicado pelo MAVROS)
-ros2 launch drone_control tf_body_fallback.launch.py
+ros2 launch yolo_pad_pose tf_body_fallback.launch.py
 
 # 4. TF das câmeras
-ros2 launch drone_control tf_camera_static.launch.py
+ros2 launch yolo_pad_pose tf_camera_static.launch.py
 
 # 5. Supervisor de missão (aguarda /trajectory_finished)
 ros2 launch drone_control supervisor_T.launch.py

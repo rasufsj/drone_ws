@@ -49,8 +49,8 @@ drone_control/
     ├── drone_yaw_360.launch.py           ← sobe drone_yaw_360               → [03][14]
     ├── mission_three_nodes.launch.py     ← missão de três nós encadeados    → [03][14]
     ├── supervisor_T.launch.py            ← sobe supervisor_T                → [03][14]
-    ├── tf_body_fallback.launch.py        ← TF estático base_link → fcu     → [03][14]
-    └── tf_camera_static.launch.py        ← TF estático fcu → câmeras        → [03][14]
+    ├── tf_body_fallback.launch.py        ← movido para `yolo_pad_pose`
+    └── tf_camera_static.launch.py        ← movido para `yolo_pad_pose`
 ```
 
 ## Tópicos principais

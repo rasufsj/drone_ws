@@ -180,13 +180,13 @@ export CONNECT_TO_QGC=1        # habilita conexão com QGroundControl (porta UDP
       - |
         waitForGazebo; sleep 5
         source ~/ros2_ws/install/setup.bash
-        ros2 launch drone_control tf_body_fallback.launch.py
+        ros2 launch yolo_pad_pose tf_body_fallback.launch.py
 
       # TF estático da câmera (pose da câmera em relação ao corpo do drone)
       - |
         waitForGazebo; sleep 5
         source ~/ros2_ws/install/setup.bash
-        ros2 launch drone_control tf_camera_static.launch.py
+        ros2 launch yolo_pad_pose tf_camera_static.launch.py
 
       # Broadcaster de TF a partir da odometria (publica uav1/odom → uav1/base_link)
       - |
@@ -327,8 +327,8 @@ tmuxinator session.yml
 │              └─→ Spawn uav1 (F450 + câmeras + rangefinder)
 │
 ├── px4 ─────────→ PX4 SITL (uav1, gz plugin)
-│              └─→ tf_body_fallback.launch.py
-│              └─→ tf_camera_static.launch.py
+│              └─→ tf_body_fallback.launch.py  (yolo_pad_pose)
+│              └─→ tf_camera_static.launch.py  (yolo_pad_pose)
 │              └─→ odom_tf_broadcaster
 │
 ├── status ──────→ drone_status_monitor.py (painel curses 2 Hz)
