@@ -1,5 +1,8 @@
 # 14 — Launch Files e Testes
 
+> **Explicação linha por linha** de cada launch file está em
+> [`14-launch.md`](14-launch.md).
+
 Este documento apresenta um **resumo** dos três launch files e dos sete
 arquivos de teste do pacote `yolo_pad_pose`. Para a explicação linha por
 linha dos módulos Python principais, consulte
@@ -8,6 +11,10 @@ linha dos módulos Python principais, consulte
 ---
 
 ## 1. Launch Files
+
+Para a explicação detalhada (linha por linha, argumentos, parâmetros,
+remappings, frames TF e exemplos de execução) de cada launch file, acesse
+[`14-launch.md`](14-launch.md).
 
 ### 1.1 `tf_body_fallback.launch.py`
 
