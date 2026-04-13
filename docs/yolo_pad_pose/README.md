@@ -14,7 +14,8 @@ via YOLO v8 e pela **publicação de waypoints** de missão para o controlador d
 | [`11-dataset-e-treinamento.md`](11-dataset-e-treinamento.md) | Problema inicial, montagem do val800, dataset CVAT→Ultralytics, treino e validação |
 | [`12-ros2-integracao.md`](12-ros2-integracao.md) | Como rodar no ROS 2 Jazzy, parâmetros, tópicos/frames, ajuste do `conf` e sessão `one_drone` |
 | [`13-modulos-principais.md`](13-modulos-principais.md) | Explicação **linha por linha** dos 4 módulos Python principais |
-| [`14-launch-e-tests.md`](14-launch-e-tests.md) | Resumo dos launch files e dos testes automatizados |
+| [`14-launch.md`](14-launch.md) | Explicação **linha por linha** dos 3 launch files (argumentos, nós, parâmetros, TF tree, exemplos) |
+| [`14-launch-e-tests.md`](14-launch-e-tests.md) | Resumo dos launch files e explicação dos testes automatizados |
 
 ---
 
