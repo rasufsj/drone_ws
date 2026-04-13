@@ -15,7 +15,7 @@
 |---|---------|--------------|---------------|
 | 1 | [`camera_viewer.launch.py`](#1-camera_viewerlaunchpy) | `camera_viewer` | [14-launch-files.md](14-launch-files.md#1-camera_viewerlaunchpy) |
 | 2 | [`drone_yaw_360.launch.py`](#2-drone_yaw_360launchpy) | `drone_yaw_360` | [14-launch-files.md](14-launch-files.md#2-drone_yaw_360launchpy) |
-| 3 | [`mission_three_nodes.launch.py`](#3-mission_three_nodeslaunchpy) | `drone_soft_land`, `drone_activator`, `drone_go_forward`, `camera_viewer` | [14-launch-files.md](14-launch-files.md#3-mission_three_nodeslaunchpy) |
+| 3 | [`mission_three_nodes.launch.py`](#3-mission_three_nodeslaunchpy) | `drone_soft_land`⚠️, `drone_activator`⚠️, `drone_go_forward`⚠️, `camera_viewer` | [14-launch-files.md](14-launch-files.md#3-mission_three_nodeslaunchpy) |
 | 4 | [`supervisor_T.launch.py`](#4-supervisor_tlaunchpy) | `supervisor_T` | [14-launch-files.md](14-launch-files.md#4-supervisor_tlaunchpy) |
 | 5 | [`tf_body_fallback.launch.py`](#5-tf_body_fallbacklaunchpy) | `static_transform_publisher` (base_link→fcu) | movido para `yolo_pad_pose` |
 | 6 | [`tf_camera_static.launch.py`](#6-tf_camera_staticlaunchpy) | `static_transform_publisher` ×2 (fcu→câmeras) | movido para `yolo_pad_pose` |
@@ -71,6 +71,12 @@ Lança uma missão encadeada de três nós usando eventos de processo do ROS 2:
 `drone_soft_land` → (10 s de espera) → `drone_activator` + `drone_go_forward`.
 O `camera_viewer` sobe em paralelo desde o início.
 
+> ⚠️ **Executáveis não presentes no `drone_control/src/` atual:** os nós
+> `drone_soft_land`, `drone_activator` e `drone_go_forward` são referenciados
+> neste launch file mas **não possuem arquivo-fonte** em `drone_control/src/`.
+> Este launch file funcionará apenas se esses executáveis estiverem compilados e
+> disponíveis em outro pacote do workspace.
+
 ### Nós lançados e ordem
 
 ```
@@ -98,9 +104,6 @@ RegisterEventHandler(
 ```bash
 ros2 launch drone_control mission_three_nodes.launch.py
 ```
-
-> **Nota:** `drone_soft_land`, `drone_activator` e `drone_go_forward` são
-> executáveis externos que precisam estar compilados e instalados no workspace.
 
 ---
 

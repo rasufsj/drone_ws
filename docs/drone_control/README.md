@@ -60,6 +60,8 @@ drone_control/
 | `/waypoints` | `geometry_msgs/PoseArray` | pub | `takeoff`, `pouso` |
 | `/trajectory_progress` | `std_msgs/Float32` | sub | `supervisor_T` |
 | `/trajectory_finished` | `std_msgs/Bool` | sub | `supervisor_T` |
+| `/mission_cycle_done` | `std_msgs/Bool` | pub | `supervisor_T` (sinaliza fim de ciclo) |
+| `/yaw_scan_done` | `std_msgs/Bool` | pub | `supervisor_T` (sinaliza fim do giro inicial) |
 | `/uav1/mavros/state` | `mavros_msgs/State` | sub | `takeoff`, `pouso` |
 | `/uav1/mavros/local_position/odom` | `nav_msgs/Odometry` | sub | `takeoff`, `pouso`, `drone_yaw_360`, `supervisor_T` |
 | `/uav1/yaw_override/cmd` | `drone_control/YawOverride` | pub | `drone_yaw_360` |
@@ -85,4 +87,7 @@ entre os dois pacotes é realizada via tópicos ROS 2:
 - Nomes de variáveis membros seguem o sufixo `_` (ex.: `fsm_`, `current_z_`).
 - Tópicos específicos ao veículo são prefixados com `/uav1/`.
 - Explicações por **blocos de código** em todos os arquivos relevantes.
-- Última sincronização com o código-fonte: branch `main`, 2026-04-13.
+- Última sincronização com o código-fonte: branch `main`, commit `ca02089`.
+  > **Nota:** o commit `ca02089` ("16") alterou exclusivamente
+  > `mrs_uav_gazebo_simulator/tmux/one_drone/session.yml` (2 inserções, 2 deleções)
+  > — nenhum arquivo de `drone_control/` foi modificado nesse commit.
