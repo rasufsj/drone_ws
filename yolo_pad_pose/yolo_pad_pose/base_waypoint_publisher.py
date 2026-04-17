@@ -226,16 +226,16 @@ class BaseWaypointPublisher(Node):
         self.declare_parameter("max_bases", 6)
 
         # merge_area_m2 = 2.25 → merge_radius = sqrt(2.25/pi) ≈ 0.846 m
-        self.declare_parameter("merge_area_m2", 2.25)
-        self.declare_parameter("min_seen_count", 3)
+        self.declare_parameter("merge_area_m2", 4)
+        self.declare_parameter("min_seen_count", 2)
 
         self.declare_parameter("reach_tol_m", 0.10)
-        self.declare_parameter("dwell_s", 5.0)
+        self.declare_parameter("dwell_s", 10.0)
         self.declare_parameter("publish_period_s", 0.25)
 
         # Outlier rejection
         self.declare_parameter("max_detection_range_m", 6.0)
-        self.declare_parameter("max_jump_m", 2.0)
+        self.declare_parameter("max_jump_m", 0.0)
 
         # If True, wait until max_bases are visited before returning home.
         # If False, return home after all *currently known* bases are visited.

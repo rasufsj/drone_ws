@@ -126,8 +126,8 @@ windows:
           python3 -m yolo_pad_pose.yolo_pad_pose_ros2 --ros-args \
             -p model_path:=/home/lmnr31/ros2_ws/src/models/landing_pad_yolo/best.pt \
             -p conf:=0.7 \
-            -p max_base_range_m:=4.0 \
-            -p max_h_range_m:=4.0
+            -p max_base_range_m:=5.0 \
+            -p max_h_range_m:=5.0
 
 
   # ── 9-10. Free terminals ───────────────────────────────────────────────────
