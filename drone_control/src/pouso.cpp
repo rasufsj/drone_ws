@@ -27,10 +27,11 @@
 //   max_approach_z    (double, default  3.5)     — maximum allowed approach altitude (m); approach_z is clamped to this
 //   use_yolo_h        (bool,   default  false)   — use YOLO H detection for landing XY
 //   h_topic           (string, default "/landing_pad/h_relative_position") — YOLO H topic
-//   h_collect_time_s  (double, default  1.0)     — seconds to hover and collect H detections before choosing best
+//   h_collect_time_s  (double, default  1.0)     — seconds to hover and collect H detections before choosing target base
 //   h_timeout_s       (double, default  0.75)    — max age (s) of a valid H detection (rolling window)
 //   max_h_range_m     (double, default  6.0)     — max planar range (m) to accept a detection
-//   prefer_closest_h  (bool,   default  true)    — pick H closest to drone; false = latest
+//   h_cluster_eps_m   (double, default  0.35)    — clustering radius for detections of same base (m)
+//   h_min_cluster_size(int,    default  1)       — minimum detections for a valid base cluster
 //
 // Published topics
 //   /waypoints  [geometry_msgs/PoseArray]   — consumed by my_drone_controller
@@ -46,6 +47,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <queue>
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
@@ -83,7 +85,8 @@ public:
     this->declare_parameter<double>     ("h_collect_time_s", 1.0);
     this->declare_parameter<double>     ("h_timeout_s",     0.75);
     this->declare_parameter<double>     ("max_h_range_m",   6.0);
-    this->declare_parameter<bool>       ("prefer_closest_h",  false);
+    this->declare_parameter<double>     ("h_cluster_eps_m",  0.35);
+    this->declare_parameter<int>        ("h_min_cluster_size", 1);
     this->declare_parameter<double>     ("xy_hold_tol",      0.10);
     this->declare_parameter<double>     ("xy_hold_stable_s", 1.0);
     this->declare_parameter<double>     ("xy_abort_tol",     0.5);
@@ -103,7 +106,14 @@ public:
     h_collect_time_s_ = this->get_parameter("h_collect_time_s").as_double();
     h_timeout_s_     = this->get_parameter("h_timeout_s").as_double();
     max_h_range_m_   = this->get_parameter("max_h_range_m").as_double();
-    prefer_closest_h_ = this->get_parameter("prefer_closest_h").as_bool();
+    h_cluster_eps_m_ = this->get_parameter("h_cluster_eps_m").as_double();
+    h_min_cluster_size_ = this->get_parameter("h_min_cluster_size").as_int();
+    if (h_min_cluster_size_ < 1) {
+      RCLCPP_WARN(this->get_logger(),
+        "h_min_cluster_size=%d inválido; ajustando para 1.",
+        h_min_cluster_size_);
+      h_min_cluster_size_ = 1;
+    }
     xy_hold_tol_      = this->get_parameter("xy_hold_tol").as_double();
     xy_hold_stable_s_ = this->get_parameter("xy_hold_stable_s").as_double();
     xy_abort_tol_     = this->get_parameter("xy_abort_tol").as_double();
@@ -142,13 +152,15 @@ public:
       "pouso node started. uav=%s landing_z=%.2f use_current_xy=%s "
       "target=(%.2f, %.2f) check_after=%.1fs "
       "xy_hold_tol=%.3fm xy_hold_stable_s=%.1fs xy_abort_tol=%.3fm "
-      "approach_z=%s max_approach_z=%.2fm use_yolo_h=%s",
+      "approach_z=%s max_approach_z=%.2fm use_yolo_h=%s "
+      "h_cluster_eps_m=%.2f h_min_cluster_size=%d",
       uav_name_.c_str(), landing_z_,
       use_current_xy_ ? "true" : "false",
       target_x_, target_y_, check_after_sec_,
       xy_hold_tol_, xy_hold_stable_s_, xy_abort_tol_,
       approach_z_str.c_str(), max_approach_z_,
-      use_yolo_h_ ? "true" : "false");
+      use_yolo_h_ ? "true" : "false",
+      h_cluster_eps_m_, h_min_cluster_size_);
   }
 
 private:
@@ -185,13 +197,10 @@ private:
       return;
     }
 
-    // During collection window, track the best (closest) candidate
+    // During collection window, store detections for cluster-based averaging
     if (fsm_ == PousoFSM::COLLECT_H) {
       h_collect_count_++;
-      if (!has_best_h_ || range < best_collected_h_.range) {
-        best_collected_h_ = {this->now(), right, front, range};
-        has_best_h_ = true;
-      }
+      h_collected_window_.push_back({this->now(), right, front, range});
     }
 
     h_detections_.push_back({this->now(), right, front, range});
@@ -205,6 +214,96 @@ private:
           return (now - d.stamp).seconds() > h_timeout_s_;
         }),
       h_detections_.end());
+  }
+
+  bool selectBestClusteredH()
+  {
+    if (h_collected_window_.empty()) {
+      RCLCPP_INFO(this->get_logger(),
+        "[yolo_h] Coleta concluída (%.1fs): %d detecções aceitas, 0 clusters encontrados (0 válidos; min_size=%d; eps=%.2fm)",
+        h_collect_time_s_, h_collect_count_, h_min_cluster_size_, h_cluster_eps_m_);
+      return false;
+    }
+
+    const size_t n = h_collected_window_.size();
+    std::vector<std::vector<size_t>> adjacency(n);
+    for (size_t i = 0; i < n; ++i) {
+      for (size_t j = i + 1; j < n; ++j) {
+        double dr = h_collected_window_[i].right - h_collected_window_[j].right;
+        double df = h_collected_window_[i].front - h_collected_window_[j].front;
+        if (std::hypot(dr, df) <= h_cluster_eps_m_) {
+          adjacency[i].push_back(j);
+          adjacency[j].push_back(i);
+        }
+      }
+    }
+
+    std::vector<bool> visited(n, false);
+    int clusters_found = 0;
+    int valid_clusters = 0;
+    bool selected = false;
+    HDetection selected_mean;
+
+    for (size_t i = 0; i < n; ++i) {
+      if (visited[i]) {
+        continue;
+      }
+
+      std::queue<size_t> q;
+      std::vector<size_t> component;
+      q.push(i);
+      visited[i] = true;
+
+      while (!q.empty()) {
+        size_t cur = q.front();
+        q.pop();
+        component.push_back(cur);
+        for (size_t nei : adjacency[cur]) {
+          if (!visited[nei]) {
+            visited[nei] = true;
+            q.push(nei);
+          }
+        }
+      }
+
+      clusters_found++;
+      if (component.size() < static_cast<size_t>(h_min_cluster_size_)) {
+        continue;
+      }
+      valid_clusters++;
+
+      double sum_right = 0.0;
+      double sum_front = 0.0;
+      for (size_t idx : component) {
+        sum_right += h_collected_window_[idx].right;
+        sum_front += h_collected_window_[idx].front;
+      }
+      const double mean_right = sum_right / static_cast<double>(component.size());
+      const double mean_front = sum_front / static_cast<double>(component.size());
+      const double mean_range = std::hypot(mean_right, mean_front);
+
+      if (!selected || mean_range < selected_mean.range) {
+        selected = true;
+        selected_mean = {this->now(), mean_right, mean_front, mean_range};
+      }
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+      "[yolo_h] Coleta concluída (%.1fs): %d detecções aceitas, %d clusters encontrados (%d válidos; min_size=%d; eps=%.2fm)",
+      h_collect_time_s_, h_collect_count_,
+      clusters_found, valid_clusters, h_min_cluster_size_, h_cluster_eps_m_);
+
+    if (!selected) {
+      RCLCPP_WARN(this->get_logger(),
+        "[yolo_h] Nenhum cluster válido encontrado. Usando fallback (odometria/parâmetros).");
+      return false;
+    }
+
+    best_collected_h_ = selected_mean;
+    RCLCPP_INFO(this->get_logger(),
+      "[yolo_h] Cluster selecionado (mais próximo do centro): range=%.2fm | média right=%.2f front=%.2f",
+      best_collected_h_.range, best_collected_h_.right, best_collected_h_.front);
+    return true;
   }
 
   // ── FSM timer ──────────────────────────────────────────────────────────────
@@ -239,6 +338,7 @@ private:
           collect_start_    = this->now();
           h_collect_count_  = 0;
           has_best_h_       = false;
+          h_collected_window_.clear();
           fsm_ = PousoFSM::COLLECT_H;
         } else {
           startLanding();
@@ -255,13 +355,8 @@ private:
             return;
           }
           // Collection window elapsed
-          if (has_best_h_) {
-            RCLCPP_INFO(this->get_logger(),
-              "[yolo_h] Coleta concluída (%.1fs): %d detecções aceitas, "
-              "melhor range=%.2fm (right=%.2f front=%.2f)",
-              h_collect_time_s_, h_collect_count_,
-              best_collected_h_.range, best_collected_h_.right, best_collected_h_.front);
-          } else {
+          has_best_h_ = selectBestClusteredH();
+          if (!has_best_h_) {
             RCLCPP_WARN(this->get_logger(),
               "[yolo_h] Coleta concluída (%.1fs): NENHUMA detecção H válida. "
               "Usando fallback (odometria/parâmetros).",
@@ -530,6 +625,7 @@ private:
   double approach_z_    {0.0};  // hover altitude for CENTER phase (set in startLanding())
 
   std::vector<HDetection> h_detections_;
+  std::vector<HDetection> h_collected_window_;
 
   rclcpp::Time attempt_start_;
   rclcpp::Time collect_start_;
@@ -557,7 +653,8 @@ private:
   double      h_collect_time_s_;
   double      h_timeout_s_;
   double      max_h_range_m_;
-  bool        prefer_closest_h_;
+  double      h_cluster_eps_m_;
+  int         h_min_cluster_size_;
 };
 
 int main(int argc, char ** argv)
