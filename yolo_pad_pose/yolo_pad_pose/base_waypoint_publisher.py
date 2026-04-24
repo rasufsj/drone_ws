@@ -230,7 +230,7 @@ class BaseWaypointPublisher(Node):
         self.declare_parameter("min_seen_count", 2)
 
         self.declare_parameter("reach_tol_m", 0.10)
-        self.declare_parameter("dwell_s", 10.0)
+        self.declare_parameter("dwell_s", 12.50)
         self.declare_parameter("publish_period_s", 0.25)
 
         # Outlier rejection
